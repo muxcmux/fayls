@@ -1,8 +1,36 @@
 use salvo::prelude::*;
 use salvo::{http::HeaderValue, http::header};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use std::time::UNIX_EPOCH;
+use tokio::signal::unix::{SignalKind, signal};
+use tokio::sync::mpsc;
 use walkdir::{DirEntry, WalkDir};
+
+enum Event {
+    Reindex,
+}
+
+struct Worker;
+
+impl Worker {
+    async fn run(self, mut rx: mpsc::Receiver<Event>) {
+        while let Some(event) = rx.recv().await {
+            self.handle_event(event).await;
+        }
+        tracing::info!("worker channel closed, worker exiting");
+    }
+
+    async fn handle_event(&self, event: Event) {
+        match event {
+            Event::Reindex => {
+                tracing::info!("worker received reindex event");
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                tracing::info!("worker finished reindex event");
+            }
+        }
+    }
+}
 
 #[derive(serde::Serialize)]
 enum FsEntryKind {
@@ -144,11 +172,53 @@ async fn list_files_handler(req: &mut Request, res: &mut Response) {
 async fn main() {
     tracing_subscriber::fmt().init();
 
+    let (tx, rx) = mpsc::channel::<Event>(8);
+    let worker_task = tokio::spawn(async move {
+        let worker = Worker;
+        worker.run(rx).await;
+    });
+
+    if let Err(error) = tx.send(Event::Reindex).await {
+        tracing::error!("failed to dispatch initial reindex event: {error}");
+    }
+
     let acceptor = TcpListener::new("127.0.0.1:8080").bind().await;
 
     let router = Router::new()
         .hoop(force_json_format)
         .get(list_files_handler);
 
-    Server::new(acceptor).serve(router).await;
+    let server = Server::new(acceptor);
+    let server_handle = server.handle();
+
+    tokio::spawn(async move {
+        match (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::interrupt()),
+        ) {
+            (Ok(mut sigterm), Ok(mut sigint)) => {
+                tokio::select! {
+                    _ = sigterm.recv() => {
+                        tracing::info!("SIGTERM received, starting graceful shutdown");
+                        server_handle.stop_graceful(None);
+                    }
+                    _ = sigint.recv() => {
+                        tracing::info!("SIGINT received, starting graceful shutdown");
+                        server_handle.stop_graceful(None);
+                    }
+                }
+            }
+            _ => {
+                tracing::error!("failed to listen for signals");
+            }
+        }
+    });
+
+    server.serve(router).await;
+
+    drop(tx);
+
+    if let Err(error) = worker_task.await {
+        tracing::error!("worker task errored during shutdown: {error}");
+    }
 }

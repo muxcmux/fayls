@@ -114,7 +114,7 @@ impl From<DirEntry> for FsEntry {
 
 impl FsEntry {
     async fn reindex(&self) {
-        sleep(Duration::new(0, 999999)).await;
+        sleep(Duration::new(0, 999_999)).await;
         tracing::info!("Indexed {}", self.path.display());
     }
 }

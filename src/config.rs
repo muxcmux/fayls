@@ -27,17 +27,33 @@ pub struct Config {
     pub app: App,
 }
 
-const DEFAULT_CONFIG_FILE: &str = "config.yaml";
+enum DefaultConfigFile {
+    Arg(String),
+    Static,
+}
+
+const DEFAULT_CONFIG_FILES: &[&str] = &["config.yaml", "data/config.yaml"];
 
 impl Config {
-    fn from_file(filename: &str) -> Result<Self, config::ConfigError> {
+    fn from_file(f: DefaultConfigFile) -> Result<Self, config::ConfigError> {
         let default = String::from_utf8_lossy(include_bytes!("config.yaml"));
-        let config = config::Config::builder()
-            .add_source(File::from_str(&default, FileFormat::Yaml))
-            .add_source(File::with_name(filename).required(false))
-            .add_source(Environment::with_prefix("FAYLS"))
-            .build()?;
-        config.try_deserialize::<Self>()
+        let mut config =
+            config::Config::builder().add_source(File::from_str(&default, FileFormat::Yaml));
+
+        match f {
+            DefaultConfigFile::Arg(file) => {
+                config = config.add_source(File::with_name(&file).required(false));
+            }
+            DefaultConfigFile::Static => {
+                for file in DEFAULT_CONFIG_FILES {
+                    config = config.add_source(File::with_name(file).required(false));
+                }
+            }
+        }
+
+        config = config.add_source(Environment::with_prefix("FAYLS"));
+
+        config.build()?.try_deserialize::<Self>()
     }
 }
 
@@ -46,6 +62,6 @@ impl Config {
 pub fn load_config() -> Result<Config, config::ConfigError> {
     let config_file = args()
         .nth(1)
-        .unwrap_or_else(|| DEFAULT_CONFIG_FILE.to_string());
-    Config::from_file(&config_file)
+        .map_or_else(|| DefaultConfigFile::Static, DefaultConfigFile::Arg);
+    Config::from_file(config_file)
 }

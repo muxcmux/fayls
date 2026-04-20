@@ -36,7 +36,7 @@ const DEFAULT_CONFIG_FILES: &[&str] = &["config.yaml", "data/config.yaml"];
 
 impl Config {
     fn from_file(f: DefaultConfigFile) -> Result<Self, config::ConfigError> {
-        let default = String::from_utf8_lossy(include_bytes!("config.yaml"));
+        let default = String::from_utf8_lossy(include_bytes!("default_config.yaml"));
         let mut config =
             config::Config::builder().add_source(File::from_str(&default, FileFormat::Yaml));
 

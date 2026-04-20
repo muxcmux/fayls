@@ -7,7 +7,7 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1", features = ["macros", "signal"] }
 
-salvo = "0.92"
+salvo ={ version = "0.92", features = ["affix-state"] }
 
 tracing = "0.1"
 tracing-subscriber = "0.3"

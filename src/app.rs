@@ -11,32 +11,55 @@ use std::{
 use salvo::handler;
 use tokio::{
     signal::unix::{SignalKind, signal},
-    sync::mpsc,
+    sync::mpsc::{self, Sender},
+    time::sleep,
 };
 use walkdir::{DirEntry, WalkDir};
 
 enum Event {
-    Reindex,
+    Quit,
+    FullReindex(Vec<PathBuf>),
+    ReindexDirEntry(DirEntry),
 }
 
-struct Worker;
+struct FullReindexJob {
+    paths: Vec<PathBuf>,
+    tx: Sender<Event>,
+}
 
-impl Worker {
-    async fn run(self, mut rx: mpsc::Receiver<Event>) {
-        while let Some(event) = rx.recv().await {
-            self.handle_event(event).await;
-        }
-        tracing::info!("worker channel closed, worker exiting");
+impl FullReindexJob {
+    fn new(paths: Vec<PathBuf>, tx: Sender<Event>) -> Self {
+        Self { paths, tx }
     }
 
-    async fn handle_event(&self, event: Event) {
-        match event {
-            Event::Reindex => {
-                tracing::info!("worker received reindex event");
-                tokio::time::sleep(Duration::from_secs(10)).await;
-                tracing::info!("worker finished reindex event");
+    async fn run(&self) {
+        for path in &self.paths {
+            tracing::info!("Reindexing {}", path.display());
+            for entry in WalkDir::new(path).min_depth(1) {
+                match entry {
+                    Ok(entry) => {
+                        _ = self.tx.send(Event::ReindexDirEntry(entry)).await;
+                    }
+                    Err(error) => tracing::warn!("failed to read directory entry: {error}"),
+                }
             }
         }
+    }
+}
+
+async fn handle_event(event: Event, state: AppState) {
+    match event {
+        Event::FullReindex(paths) => {
+            tokio::spawn(async move {
+                let job = FullReindexJob::new(paths, state.tx);
+                job.run().await;
+            });
+        }
+        Event::ReindexDirEntry(entry) => {
+            let fsentry: FsEntry = entry.into();
+            fsentry.reindex().await;
+        }
+        Event::Quit => {}
     }
 }
 
@@ -86,6 +109,13 @@ impl From<DirEntry> for FsEntry {
             last_modified,
             path: entry.into_path(),
         }
+    }
+}
+
+impl FsEntry {
+    async fn reindex(&self) {
+        sleep(Duration::new(0, 999999)).await;
+        tracing::info!("Indexed {}", self.path.display());
     }
 }
 
@@ -176,20 +206,39 @@ async fn list_files_handler(req: &mut Request, res: &mut Response) {
     res.render(list_entries(requested_path));
 }
 
+#[derive(Clone)]
+struct AppState {
+    config: Config,
+    tx: Sender<Event>,
+}
+
 pub async fn run_app(config: Config) {
-    let (tx, rx) = mpsc::channel::<Event>(8);
-    let worker_task = tokio::spawn(async move {
-        let worker = Worker;
-        worker.run(rx).await;
+    let (tx, mut rx) = mpsc::channel::<Event>(8);
+    let exit_tx = tx.clone();
+
+    let state = AppState { config, tx };
+
+    let state_for_event = state.clone();
+    let event_handler = tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                Event::Quit => {
+                    break;
+                }
+                _ => handle_event(event, state_for_event.clone()).await,
+            }
+        }
+        tracing::info!("event handler finished, exiting");
     });
 
-    if let Err(error) = tx.send(Event::Reindex).await {
-        tracing::error!("failed to dispatch initial reindex event: {error}");
-    }
+    let sources = state.config.app.sources.clone();
 
-    let acceptor = TcpListener::new(config.server.addr()).bind().await;
+    _ = state.tx.send(Event::FullReindex(sources)).await;
+
+    let acceptor = TcpListener::new(state.config.server.addr()).bind().await;
 
     let router = Router::new()
+        .hoop(affix_state::inject(state))
         .hoop(force_json_format)
         .get(list_files_handler);
 
@@ -206,10 +255,12 @@ pub async fn run_app(config: Config) {
                     _ = sigterm.recv() => {
                         tracing::info!("SIGTERM received, starting graceful shutdown");
                         server_handle.stop_graceful(None);
+                        _ = exit_tx.send(Event::Quit).await;
                     }
                     _ = sigint.recv() => {
                         tracing::info!("SIGINT received, starting graceful shutdown");
                         server_handle.stop_graceful(None);
+                        _ = exit_tx.send(Event::Quit).await;
                     }
                 }
             }
@@ -221,9 +272,5 @@ pub async fn run_app(config: Config) {
 
     server.serve(router).await;
 
-    drop(tx);
-
-    if let Err(error) = worker_task.await {
-        tracing::error!("worker task errored during shutdown: {error}");
-    }
+    _ = event_handler.await;
 }

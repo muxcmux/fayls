@@ -246,26 +246,15 @@ pub async fn run_app(config: Config) {
     let server_handle = server.handle();
 
     tokio::spawn(async move {
-        match (
-            signal(SignalKind::terminate()),
-            signal(SignalKind::interrupt()),
-        ) {
-            (Ok(mut sigterm), Ok(mut sigint)) => {
-                tokio::select! {
-                    _ = sigterm.recv() => {
-                        tracing::info!("SIGTERM received, starting graceful shutdown");
-                        server_handle.stop_graceful(None);
-                        _ = exit_tx.send(Event::Quit).await;
-                    }
-                    _ = sigint.recv() => {
-                        tracing::info!("SIGINT received, starting graceful shutdown");
-                        server_handle.stop_graceful(None);
-                        _ = exit_tx.send(Event::Quit).await;
-                    }
-                }
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                _ = sigterm.recv().await;
+                tracing::info!("SIGTERM received, starting graceful shutdown");
+                server_handle.stop_graceful(None);
+                _ = exit_tx.send(Event::Quit).await;
             }
             _ => {
-                tracing::error!("failed to listen for signals");
+                tracing::error!("failed to listen for SIGTERM");
             }
         }
     });

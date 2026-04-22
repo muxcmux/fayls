@@ -1,130 +1,210 @@
 use crate::config::Config;
+use anyhow::Result;
+use rusqlite::{DropBehavior, OptionalExtension, types::Type};
 use salvo::{
     http::{HeaderValue, header},
     prelude::*,
 };
 use std::{
     path::{Path, PathBuf},
-    time::{Duration, UNIX_EPOCH},
+    time::UNIX_EPOCH,
 };
 
 use salvo::handler;
 use tokio::{
     signal::unix::{SignalKind, signal},
     sync::mpsc::{self, Sender},
-    time::sleep,
 };
 use walkdir::{DirEntry, WalkDir};
 
 enum Event {
     Quit,
-    FullReindex(Vec<PathBuf>),
-    ReindexDirEntry(DirEntry),
+    Scan(Vec<PathBuf>),
+    Index(Vec<DirEntry>),
 }
 
-struct FullReindexJob {
-    paths: Vec<PathBuf>,
-    tx: Sender<Event>,
-}
+const BATCH_SIZE: usize = 10_000;
 
-impl FullReindexJob {
-    fn new(paths: Vec<PathBuf>, tx: Sender<Event>) -> Self {
-        Self { paths, tx }
-    }
-
-    async fn run(&self) {
-        for path in &self.paths {
-            tracing::info!("Reindexing {}", path.display());
-            for entry in WalkDir::new(path).min_depth(1) {
-                match entry {
-                    Ok(entry) => {
-                        _ = self.tx.send(Event::ReindexDirEntry(entry)).await;
+async fn scan(paths: Vec<PathBuf>, tx: Sender<Event>) {
+    let mut batch = Vec::with_capacity(BATCH_SIZE);
+    for path in paths {
+        for entry in WalkDir::new(path).min_depth(1) {
+            match entry {
+                Ok(entry) => {
+                    batch.push(entry);
+                    if batch.len() >= BATCH_SIZE {
+                        _ = tx.send(Event::Index(std::mem::take(&mut batch))).await;
                     }
-                    Err(error) => tracing::warn!("failed to read directory entry: {error}"),
                 }
+                Err(error) => tracing::warn!("failed to read directory entry: {error}"),
             }
         }
     }
-}
 
-async fn handle_event(event: Event, state: AppState) {
-    match event {
-        Event::FullReindex(paths) => {
-            tokio::spawn(async move {
-                let job = FullReindexJob::new(paths, state.tx);
-                job.run().await;
-            });
-        }
-        Event::ReindexDirEntry(entry) => {
-            let fsentry: FsEntry = entry.into();
-            fsentry.reindex().await;
-        }
-        Event::Quit => {}
+    if !batch.is_empty() {
+        _ = tx.send(Event::Index(batch)).await;
     }
 }
 
+async fn index(entries: Vec<DirEntry>, state: AppState) -> Result<()> {
+    let mut db = state.config.db();
+    let mut txn = db.transaction()?;
+    txn.set_drop_behavior(DropBehavior::Commit);
+
+    let mut select_stmt = txn.prepare(
+        r"
+        SELECT path, parent, name, kind, size, checksum, last_modified
+        FROM fayls
+        WHERE path = ?1
+        ",
+    )?;
+    let mut insert_stmt = txn.prepare(
+        r"
+        INSERT INTO fayls (path, parent, name, kind, size, checksum, last_modified)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        ",
+    )?;
+
+    for entry in entries {
+        let path = entry.path().to_path_buf();
+        let path_s = path.to_string_lossy().to_string();
+        if let Some(_existing) = select_stmt
+            .query_row([path_s], |row| Fayl::try_from(row))
+            .optional()?
+        {
+            // check if checksum is the same and if not, reindex content and update
+            tracing::info!("skipping {}", path.display());
+        } else {
+            let fayl = Fayl::from(entry);
+            insert_stmt.execute(rusqlite::params![
+                fayl.path.to_string_lossy().to_string(),
+                fayl.parent,
+                fayl.name,
+                fayl.kind.to_s(),
+                fayl.size,
+                fayl.checksum,
+                fayl.last_modified
+            ])?;
+            tracing::info!("indexed {}", path.display());
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_event(event: Event, state: AppState) -> Result<()> {
+    match event {
+        Event::Scan(paths) => {
+            tokio::spawn(async move {
+                scan(paths, state.tx).await;
+            });
+        }
+        Event::Index(entries) => {
+            // tokio::spawn(async move {
+            index(entries, state).await?;
+            // });
+        }
+        Event::Quit => {}
+    }
+
+    Ok(())
+}
+
 #[derive(serde::Serialize)]
-enum FsEntryKind {
+enum FaylKind {
     File,
     Symlink,
     Directory,
 }
 
-impl FsEntryKind {
-    fn rank(&self) -> u8 {
+impl FaylKind {
+    fn to_s(&self) -> String {
         match self {
-            FsEntryKind::Directory => 0,
-            _ => 1,
+            FaylKind::File => "file".into(),
+            FaylKind::Symlink => "symlink".into(),
+            FaylKind::Directory => "directory".into(),
         }
     }
 }
+
 #[derive(serde::Serialize)]
-struct FsEntry {
+struct Fayl {
     path: PathBuf,
-    kind: FsEntryKind,
-    last_modified: Option<jiff::Zoned>,
+    parent: Option<String>,
+    name: Option<String>,
+    kind: FaylKind,
     size: u64,
+    last_modified: Option<u64>,
+    checksum: Option<Vec<u8>>,
 }
 
-impl From<DirEntry> for FsEntry {
+impl From<DirEntry> for Fayl {
     fn from(entry: DirEntry) -> Self {
         let metadata = entry.metadata().ok();
         let kind = if entry.file_type().is_dir() {
-            FsEntryKind::Directory
+            FaylKind::Directory
         } else if entry.file_type().is_symlink() {
-            FsEntryKind::Symlink
+            FaylKind::Symlink
         } else {
-            FsEntryKind::File
+            FaylKind::File
         };
         let size = if entry.file_type().is_dir() {
             dir_size(entry.path())
         } else {
             metadata.as_ref().map_or(0, std::fs::Metadata::len)
         };
-        let last_modified = metadata.and_then(|m| zoned_from_systemtime(m.modified().ok()?));
+        let last_modified = metadata
+            .and_then(|m| m.modified().ok())
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs());
+        let parent = entry
+            .path()
+            .parent()
+            .map(|f| f.to_string_lossy().to_string());
+        let name = entry
+            .path()
+            .file_name()
+            .map(|f| f.to_string_lossy().to_string());
 
-        FsEntry {
+        Fayl {
             kind,
+            parent,
+            name,
             size,
             last_modified,
             path: entry.into_path(),
+            checksum: None,
         }
     }
 }
 
-impl FsEntry {
-    async fn reindex(&self) {
-        sleep(Duration::new(0, 999_999)).await;
-        tracing::info!("Indexed {}", self.path.display());
-    }
-}
+impl TryFrom<&rusqlite::Row<'_>> for Fayl {
+    type Error = rusqlite::Error;
 
-fn zoned_from_systemtime(system_time: std::time::SystemTime) -> Option<jiff::Zoned> {
-    let secs = system_time.duration_since(UNIX_EPOCH).ok()?.as_secs();
-    Some(jiff::Zoned::new(
-        jiff::Timestamp::from_second(secs.try_into().ok()?).ok()?,
-        jiff::tz::TimeZone::system(),
-    ))
+    fn try_from(row: &rusqlite::Row<'_>) -> std::result::Result<Self, Self::Error> {
+        let kind = match row.get::<_, String>(3)?.as_str() {
+            "file" => FaylKind::File,
+            "symlink" => FaylKind::Symlink,
+            "directory" => FaylKind::Directory,
+            other => {
+                return Err(rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    Type::Text,
+                    format!("invalid fayl kind: {other}").into(),
+                ));
+            }
+        };
+
+        Ok(Fayl {
+            path: PathBuf::from(row.get::<_, String>(0)?),
+            parent: row.get(1)?,
+            name: row.get(2)?,
+            kind,
+            size: row.get::<_, u64>(4)?,
+            checksum: row.get(5)?,
+            last_modified: row.get::<_, Option<u64>>(6)?,
+        })
+    }
 }
 
 fn dir_size(path: &Path) -> u64 {
@@ -154,20 +234,47 @@ fn dir_size(path: &Path) -> u64 {
         })
 }
 
-fn list_entries(path: &Path) -> Json<Vec<FsEntry>> {
-    let mut items: Vec<FsEntry> = Vec::new();
+fn list_entries(path: &Path, config: &Config) -> Json<Vec<Fayl>> {
+    let mut items: Vec<Fayl> = Vec::new();
+    let db = config.db();
+    let mut stmt = match db.prepare(
+        r"
+        SELECT path, parent, name, kind, size, checksum, last_modified
+        FROM fayls
+        WHERE parent = ?1
+        ORDER BY
+            CASE WHEN kind = 'directory' THEN 0 ELSE 1 END,
+            name
+        ",
+    ) {
+        Ok(stmt) => stmt,
+        Err(error) => {
+            tracing::error!(
+                "failed to prepare list_entries query for {}: {error}",
+                path.display()
+            );
+            return Json(items);
+        }
+    };
+    let parent = path.to_string_lossy().to_string();
 
-    for entry in WalkDir::new(path).min_depth(1).max_depth(1) {
-        match entry {
-            Ok(entry) => items.push(entry.into()),
-            Err(error) => tracing::warn!("failed to read directory entry: {error}"),
+    let rows = match stmt.query_map([parent], |row| Fayl::try_from(row)) {
+        Ok(rows) => rows,
+        Err(error) => {
+            tracing::error!(
+                "failed to query entries by parent for {}: {error}",
+                path.display()
+            );
+            return Json(items);
+        }
+    };
+
+    for row in rows {
+        match row {
+            Ok(fayl) => items.push(fayl),
+            Err(error) => tracing::warn!("failed to decode fayls row: {error}"),
         }
     }
-
-    items.sort_unstable_by(|a, b| match a.kind.rank().cmp(&b.kind.rank()) {
-        std::cmp::Ordering::Equal => a.path.cmp(&b.path),
-        rest => rest,
-    });
 
     Json(items)
 }
@@ -191,7 +298,7 @@ async fn force_json_format(
 }
 
 #[handler]
-async fn list_files_handler(req: &mut Request, res: &mut Response) {
+async fn list_files_handler(req: &mut Request, depot: &mut Depot, res: &mut Response) {
     let Some(path) = req.query::<String>("path") else {
         res.status_code(StatusCode::BAD_REQUEST);
         return;
@@ -203,7 +310,16 @@ async fn list_files_handler(req: &mut Request, res: &mut Response) {
         return;
     }
 
-    res.render(list_entries(requested_path));
+    let state = match depot.obtain::<AppState>() {
+        Ok(state) => state,
+        Err(_) => {
+            tracing::error!("app state missing from depot");
+            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
+            return;
+        }
+    };
+
+    res.render(list_entries(requested_path, &state.config));
 }
 
 #[derive(Clone)]
@@ -213,7 +329,7 @@ struct AppState {
 }
 
 pub async fn run_app(config: Config) {
-    let (tx, mut rx) = mpsc::channel::<Event>(8);
+    let (tx, mut rx) = mpsc::channel::<Event>(16);
     let exit_tx = tx.clone();
 
     let state = AppState { config, tx };
@@ -225,7 +341,11 @@ pub async fn run_app(config: Config) {
                 Event::Quit => {
                     break;
                 }
-                _ => handle_event(event, state_for_event.clone()).await,
+                _ => {
+                    if let Err(err) = handle_event(event, state_for_event.clone()).await {
+                        tracing::error!("{err}");
+                    }
+                }
             }
         }
         tracing::info!("event handler finished, exiting");
@@ -233,7 +353,7 @@ pub async fn run_app(config: Config) {
 
     let sources = state.config.app.sources.clone();
 
-    _ = state.tx.send(Event::FullReindex(sources)).await;
+    _ = state.tx.send(Event::Scan(sources)).await;
 
     let acceptor = TcpListener::new(state.config.server.addr()).bind().await;
 

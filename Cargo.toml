@@ -7,9 +7,10 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1", features = ["macros", "signal"] }
 
-rusqlite = "0.39"
-toasty = { version = "0.4", features = ["sqlite"] }
-refinery = { path = "vendor/refinery/refinery", features = ["rusqlite"]}
+rusqlite = { version = "0.38", features = ["fallible_uint"] }
+refinery = { version = "0.9", features = ["rusqlite"] }
+
+anyhow = "1"
 
 salvo ={ version = "0.92", features = ["affix-state"] }
 
@@ -19,6 +20,5 @@ tracing-subscriber = "0.3"
 walkdir = "2"
 
 serde = { version = "1", features = ["derive"] }
-jiff ={ version = "0.2", features = ["serde"] }
 
 config = "0.15"

@@ -55,6 +55,16 @@ impl Config {
 
         config.build()?.try_deserialize::<Self>()
     }
+
+    pub fn db(&self) -> rusqlite::Connection {
+        rusqlite::Connection::open(&self.app.database).unwrap_or_else(|err| {
+            panic!(
+                "Failed connecting to {}:\n{}",
+                self.app.database.display(),
+                err
+            )
+        })
+    }
 }
 
 /// # Errors

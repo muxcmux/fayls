@@ -310,7 +310,7 @@ pub async fn run_app(config: Config, db: Pool<Sqlite>) {
     let cancellation_token = CancellationToken::new();
     let cloned_token = cancellation_token.clone();
 
-    let mut handle_event = async move || {
+    let mut handle_event_closure = async move || {
         while let Some(event) = rx.recv().await {
             let ctx = EventContext {
                 config: &event_config,
@@ -328,7 +328,7 @@ pub async fn run_app(config: Config, db: Pool<Sqlite>) {
             () = cloned_token.cancelled() => {
                 tracing::info!("event handler stopped");
             }
-            () = handle_event() => {
+            () = handle_event_closure() => {
                 tracing::info!("event handler finished");
             }
         }

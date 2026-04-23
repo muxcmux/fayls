@@ -1,33 +1,25 @@
-use std::process::exit;
-
 use fayls::{app::run_app, config::load_config};
-
-use refinery::embed_migrations;
-use rusqlite::Connection;
-
-embed_migrations!("migrations");
+use sqlx::SqlitePool;
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt().init();
 
-    let config = match load_config() {
-        Ok(c) => c,
-        Err(err) => {
-            tracing::error!("could not load config:\n{err}");
-            exit(1)
-        }
-    };
+    let config = load_config().unwrap_or_else(|err| panic!("could not load config:\n{err}"));
 
-    migrations::runner()
-        .run(&mut config.db())
+    let pool = SqlitePool::connect(&config.app.database)
+        .await
         .unwrap_or_else(|err| {
             panic!(
-                "Failed migrating {}:\n{}",
-                &config.app.database.display(),
-                err
+                "failed creating a pool for {}:\n{}",
+                &config.app.database, err
             )
         });
 
-    run_app(config).await;
+    sqlx::migrate!("./migrations")
+        .run(&pool)
+        .await
+        .unwrap_or_else(|err| panic!("failed migrating {}:\n{}", &config.app.database, err));
+
+    run_app(config, pool).await;
 }

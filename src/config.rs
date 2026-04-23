@@ -17,7 +17,7 @@ impl Server {
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct App {
-    pub database: PathBuf,
+    pub database: String,
     pub sources: Vec<PathBuf>,
 }
 
@@ -54,16 +54,6 @@ impl Config {
         config = config.add_source(Environment::with_prefix("FAYLS"));
 
         config.build()?.try_deserialize::<Self>()
-    }
-
-    pub fn db(&self) -> rusqlite::Connection {
-        rusqlite::Connection::open(&self.app.database).unwrap_or_else(|err| {
-            panic!(
-                "Failed connecting to {}:\n{}",
-                self.app.database.display(),
-                err
-            )
-        })
     }
 }
 

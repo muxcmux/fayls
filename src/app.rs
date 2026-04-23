@@ -1,10 +1,10 @@
 use crate::config::Config;
 use anyhow::Result;
-use rusqlite::{DropBehavior, OptionalExtension, types::Type};
 use salvo::{
-    http::{HeaderValue, header},
+    http::{HeaderValue, StatusError, header},
     prelude::*,
 };
+use sqlx::{Pool, Sqlite};
 use std::{
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
@@ -47,46 +47,44 @@ async fn scan(paths: Vec<PathBuf>, tx: Sender<Event>) {
 }
 
 async fn index(entries: Vec<DirEntry>, state: AppState) -> Result<()> {
-    let mut db = state.config.db();
-    let mut txn = db.transaction()?;
-    txn.set_drop_behavior(DropBehavior::Commit);
+    // let mut db = state.config.db();
+    // let mut txn = db.transaction()?;
+    // txn.set_drop_behavior(DropBehavior::Commit);
 
-    let mut select_stmt = txn.prepare(
-        r"
-        SELECT path, parent, name, kind, size, checksum, last_modified
-        FROM fayls
-        WHERE path = ?1
-        ",
-    )?;
-    let mut insert_stmt = txn.prepare(
-        r"
-        INSERT INTO fayls (path, parent, name, kind, size, checksum, last_modified)
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-        ",
-    )?;
+    // let mut select_stmt = txn.prepare(
+    //     r"
+    //     SELECT path, parent, name, kind, size, checksum, last_modified
+    //     FROM fayls
+    //     WHERE path = ?1
+    //     ",
+    // )?;
+    // let mut insert_stmt = txn.prepare(
+    //     r"
+    //     INSERT INTO fayls (path, parent, name, kind, size, checksum, last_modified)
+    //     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+    //     ",
+    // )?;
 
     for entry in entries {
-        let path = entry.path().to_path_buf();
-        let path_s = path.to_string_lossy().to_string();
-        if let Some(_existing) = select_stmt
-            .query_row([path_s], |row| Fayl::try_from(row))
-            .optional()?
-        {
-            // check if checksum is the same and if not, reindex content and update
-            tracing::info!("skipping {}", path.display());
-        } else {
-            let fayl = Fayl::from(entry);
-            insert_stmt.execute(rusqlite::params![
-                fayl.path.to_string_lossy().to_string(),
-                fayl.parent,
-                fayl.name,
-                fayl.kind.to_s(),
-                fayl.size,
-                fayl.checksum,
-                fayl.last_modified
-            ])?;
-            tracing::info!("indexed {}", path.display());
-        }
+        // let path = entry.path().to_path_buf();
+        // let path_s = path.to_string_lossy().to_string();
+        // if let Some(_existing) = select_stmt
+        //     .query_row([path_s], |row| Fayl::try_from(row))
+        //     .optional()?
+        // {
+        //     // check if checksum is the same and if not, reindex content and update
+        //     tracing::info!("skipping {}", path.display());
+        // } else {
+        //     let fayl = Fayl::from(entry);
+        //     insert_stmt.execute(rusqlite::params![
+        //         fayl.path.to_string_lossy().to_string(),
+        //         fayl.kind.to_s(),
+        //         fayl.size,
+        //         fayl.checksum,
+        //         fayl.last_modified
+        //     ])?;
+        //     tracing::info!("indexed {}", path.display());
+        // }
     }
 
     Ok(())
@@ -130,8 +128,6 @@ impl FaylKind {
 #[derive(serde::Serialize)]
 struct Fayl {
     path: PathBuf,
-    parent: Option<String>,
-    name: Option<String>,
     kind: FaylKind,
     size: u64,
     last_modified: Option<u64>,
@@ -157,53 +153,14 @@ impl From<DirEntry> for Fayl {
             .and_then(|m| m.modified().ok())
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
             .map(|duration| duration.as_secs());
-        let parent = entry
-            .path()
-            .parent()
-            .map(|f| f.to_string_lossy().to_string());
-        let name = entry
-            .path()
-            .file_name()
-            .map(|f| f.to_string_lossy().to_string());
 
         Fayl {
             kind,
-            parent,
-            name,
             size,
             last_modified,
             path: entry.into_path(),
             checksum: None,
         }
-    }
-}
-
-impl TryFrom<&rusqlite::Row<'_>> for Fayl {
-    type Error = rusqlite::Error;
-
-    fn try_from(row: &rusqlite::Row<'_>) -> std::result::Result<Self, Self::Error> {
-        let kind = match row.get::<_, String>(3)?.as_str() {
-            "file" => FaylKind::File,
-            "symlink" => FaylKind::Symlink,
-            "directory" => FaylKind::Directory,
-            other => {
-                return Err(rusqlite::Error::FromSqlConversionFailure(
-                    3,
-                    Type::Text,
-                    format!("invalid fayl kind: {other}").into(),
-                ));
-            }
-        };
-
-        Ok(Fayl {
-            path: PathBuf::from(row.get::<_, String>(0)?),
-            parent: row.get(1)?,
-            name: row.get(2)?,
-            kind,
-            size: row.get::<_, u64>(4)?,
-            checksum: row.get(5)?,
-            last_modified: row.get::<_, Option<u64>>(6)?,
-        })
     }
 }
 
@@ -236,45 +193,45 @@ fn dir_size(path: &Path) -> u64 {
 
 fn list_entries(path: &Path, config: &Config) -> Json<Vec<Fayl>> {
     let mut items: Vec<Fayl> = Vec::new();
-    let db = config.db();
-    let mut stmt = match db.prepare(
-        r"
-        SELECT path, parent, name, kind, size, checksum, last_modified
-        FROM fayls
-        WHERE parent = ?1
-        ORDER BY
-            CASE WHEN kind = 'directory' THEN 0 ELSE 1 END,
-            name
-        ",
-    ) {
-        Ok(stmt) => stmt,
-        Err(error) => {
-            tracing::error!(
-                "failed to prepare list_entries query for {}: {error}",
-                path.display()
-            );
-            return Json(items);
-        }
-    };
-    let parent = path.to_string_lossy().to_string();
-
-    let rows = match stmt.query_map([parent], |row| Fayl::try_from(row)) {
-        Ok(rows) => rows,
-        Err(error) => {
-            tracing::error!(
-                "failed to query entries by parent for {}: {error}",
-                path.display()
-            );
-            return Json(items);
-        }
-    };
-
-    for row in rows {
-        match row {
-            Ok(fayl) => items.push(fayl),
-            Err(error) => tracing::warn!("failed to decode fayls row: {error}"),
-        }
-    }
+    // let db = config.db();
+    // let mut stmt = match db.prepare(
+    //     r"
+    //     SELECT path, parent, name, kind, size, checksum, last_modified
+    //     FROM fayls
+    //     WHERE parent = ?1
+    //     ORDER BY
+    //         CASE WHEN kind = 'directory' THEN 0 ELSE 1 END,
+    //         name
+    //     ",
+    // ) {
+    //     Ok(stmt) => stmt,
+    //     Err(error) => {
+    //         tracing::error!(
+    //             "failed to prepare list_entries query for {}: {error}",
+    //             path.display()
+    //         );
+    //         return Json(items);
+    //     }
+    // };
+    // let parent = path.to_string_lossy().to_string();
+    //
+    // let rows = match stmt.query_map([parent], |row| Fayl::try_from(row)) {
+    //     Ok(rows) => rows,
+    //     Err(error) => {
+    //         tracing::error!(
+    //             "failed to query entries by parent for {}: {error}",
+    //             path.display()
+    //         );
+    //         return Json(items);
+    //     }
+    // };
+    //
+    // for row in rows {
+    //     match row {
+    //         Ok(fayl) => items.push(fayl),
+    //         Err(error) => tracing::warn!("failed to decode fayls row: {error}"),
+    //     }
+    // }
 
     Json(items)
 }
@@ -298,43 +255,43 @@ async fn force_json_format(
 }
 
 #[handler]
-async fn list_files_handler(req: &mut Request, depot: &mut Depot, res: &mut Response) {
-    let Some(path) = req.query::<String>("path") else {
-        res.status_code(StatusCode::BAD_REQUEST);
-        return;
-    };
+async fn list_files_handler(
+    req: &mut Request,
+    depot: &mut Depot,
+    res: &mut Response,
+) -> Result<(), StatusError> {
+    let path = req
+        .query::<String>("path")
+        .ok_or_else(StatusError::bad_request)?;
 
     let requested_path = Path::new(&path);
     if !requested_path.exists() {
-        res.status_code(StatusCode::NOT_FOUND);
-        return;
+        return Err(StatusError::not_found());
     }
 
-    let state = match depot.obtain::<AppState>() {
-        Ok(state) => state,
-        Err(_) => {
+    let state = depot.obtain::<AppState>().map_err(|_| {
             tracing::error!("app state missing from depot");
-            res.status_code(StatusCode::INTERNAL_SERVER_ERROR);
-            return;
-        }
-    };
+            StatusError::internal_server_error()
+        })?;
 
     res.render(list_entries(requested_path, &state.config));
+    Ok(())
 }
 
 #[derive(Clone)]
 struct AppState {
     config: Config,
+    db: Pool<Sqlite>,
     tx: Sender<Event>,
 }
 
-pub async fn run_app(config: Config) {
+pub async fn run_app(config: Config, db: Pool<Sqlite>) {
     let (tx, mut rx) = mpsc::channel::<Event>(16);
     let exit_tx = tx.clone();
 
-    let state = AppState { config, tx };
+    let state = AppState { config, db, tx };
 
-    let state_for_event = state.clone();
+    let event_context = state.clone();
     let event_handler = tokio::spawn(async move {
         while let Some(event) = rx.recv().await {
             match event {
@@ -342,7 +299,7 @@ pub async fn run_app(config: Config) {
                     break;
                 }
                 _ => {
-                    if let Err(err) = handle_event(event, state_for_event.clone()).await {
+                    if let Err(err) = handle_event(event, event_context.clone()).await {
                         tracing::error!("{err}");
                     }
                 }

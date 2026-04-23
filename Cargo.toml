@@ -7,8 +7,7 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1", features = ["macros", "signal"] }
 
-rusqlite = { version = "0.38", features = ["fallible_uint"] }
-refinery = { version = "0.9", features = ["rusqlite"] }
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate"] }
 
 anyhow = "1"
 

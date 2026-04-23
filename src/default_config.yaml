@@ -3,3 +3,4 @@ server:
   port: 8080
 app:
   database: data/fayls.db
+  batch_size: 1000

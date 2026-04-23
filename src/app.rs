@@ -1,14 +1,19 @@
 use crate::config::Config;
 use anyhow::Result;
+use crc_fast::checksum_file;
 use salvo::{
     http::{HeaderValue, StatusError, header},
     prelude::*,
 };
-use sqlx::{Pool, Sqlite};
+use sqlx::{
+    Decode, Pool, Sqlite, SqlitePool,
+    sqlite::{SqliteArgumentValue, SqliteTypeInfo, SqliteValueRef},
+};
 use std::{
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
+use tokio_util::sync::CancellationToken;
 
 use salvo::handler;
 use tokio::{
@@ -18,21 +23,18 @@ use tokio::{
 use walkdir::{DirEntry, WalkDir};
 
 enum Event {
-    Quit,
     Scan(Vec<PathBuf>),
     Index(Vec<DirEntry>),
 }
 
-const BATCH_SIZE: usize = 10_000;
-
-async fn scan(paths: Vec<PathBuf>, tx: Sender<Event>) {
-    let mut batch = Vec::with_capacity(BATCH_SIZE);
+async fn scan(paths: Vec<PathBuf>, batch_size: usize, tx: Sender<Event>) {
+    let mut batch = Vec::with_capacity(batch_size);
     for path in paths {
         for entry in WalkDir::new(path).min_depth(1) {
             match entry {
                 Ok(entry) => {
                     batch.push(entry);
-                    if batch.len() >= BATCH_SIZE {
+                    if batch.len() >= batch_size {
                         _ = tx.send(Event::Index(std::mem::take(&mut batch))).await;
                     }
                 }
@@ -46,63 +48,60 @@ async fn scan(paths: Vec<PathBuf>, tx: Sender<Event>) {
     }
 }
 
-async fn index(entries: Vec<DirEntry>, state: AppState) -> Result<()> {
-    // let mut db = state.config.db();
-    // let mut txn = db.transaction()?;
-    // txn.set_drop_behavior(DropBehavior::Commit);
-
-    // let mut select_stmt = txn.prepare(
-    //     r"
-    //     SELECT path, parent, name, kind, size, checksum, last_modified
-    //     FROM fayls
-    //     WHERE path = ?1
-    //     ",
-    // )?;
-    // let mut insert_stmt = txn.prepare(
-    //     r"
-    //     INSERT INTO fayls (path, parent, name, kind, size, checksum, last_modified)
-    //     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-    //     ",
-    // )?;
+async fn index(entries: Vec<DirEntry>, db: &SqlitePool) -> Result<()> {
+    let mut txn = db.begin().await?;
 
     for entry in entries {
-        // let path = entry.path().to_path_buf();
-        // let path_s = path.to_string_lossy().to_string();
-        // if let Some(_existing) = select_stmt
-        //     .query_row([path_s], |row| Fayl::try_from(row))
-        //     .optional()?
-        // {
-        //     // check if checksum is the same and if not, reindex content and update
-        //     tracing::info!("skipping {}", path.display());
-        // } else {
-        //     let fayl = Fayl::from(entry);
-        //     insert_stmt.execute(rusqlite::params![
-        //         fayl.path.to_string_lossy().to_string(),
-        //         fayl.kind.to_s(),
-        //         fayl.size,
-        //         fayl.checksum,
-        //         fayl.last_modified
-        //     ])?;
-        //     tracing::info!("indexed {}", path.display());
-        // }
+        let existing = sqlx::query_as::<_, Fayl>(
+            r"
+            SELECT path, parent, kind, size, checksum, last_modified
+            FROM fayls
+            WHERE path = ?
+        ",
+        )
+        .bind(entry.path().to_string_lossy().as_ref())
+        .fetch_optional(&mut *txn)
+        .await?;
+
+        if let Some(fayl) = existing {
+            tracing::info!("skipping {}", fayl.path);
+        } else {
+            let fayl: Fayl = entry.into();
+            sqlx::query(
+                r"
+                INSERT INTO fayls (path, parent, kind, size, checksum, last_modified)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ",
+            )
+            .bind(&fayl.path)
+            .bind(&fayl.parent)
+            .bind(&fayl.kind)
+            .bind(fayl.size.cast_signed())
+            .bind(fayl.checksum.map(u64::cast_signed))
+            .bind(fayl.last_modified.map(u64::cast_signed))
+            .execute(&mut *txn)
+            .await?;
+            tracing::info!("indexed: {}", fayl.path);
+        }
     }
+
+    txn.commit().await?;
 
     Ok(())
 }
 
-async fn handle_event(event: Event, state: AppState) -> Result<()> {
+async fn handle_event(event: Event, ctx: &EventContext<'_>) -> Result<()> {
     match event {
         Event::Scan(paths) => {
+            let tx = ctx.tx.clone();
+            let batch_size = ctx.config.app.batch_size;
             tokio::spawn(async move {
-                scan(paths, state.tx).await;
+                scan(paths, batch_size, tx).await;
             });
         }
         Event::Index(entries) => {
-            // tokio::spawn(async move {
-            index(entries, state).await?;
-            // });
+            index(entries, ctx.db).await?;
         }
-        Event::Quit => {}
     }
 
     Ok(())
@@ -115,23 +114,48 @@ enum FaylKind {
     Directory,
 }
 
-impl FaylKind {
-    fn to_s(&self) -> String {
-        match self {
-            FaylKind::File => "file".into(),
-            FaylKind::Symlink => "symlink".into(),
-            FaylKind::Directory => "directory".into(),
+impl sqlx::Type<Sqlite> for FaylKind {
+    fn type_info() -> SqliteTypeInfo {
+        <String as sqlx::Type<Sqlite>>::type_info()
+    }
+}
+
+impl<'r> sqlx::Decode<'r, Sqlite> for FaylKind {
+    fn decode(value: SqliteValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
+        let s = <String as Decode<Sqlite>>::decode(value)?;
+
+        match s.as_str() {
+            "file" => Ok(FaylKind::File),
+            "symlink" => Ok(FaylKind::Symlink),
+            "directory" => Ok(FaylKind::Directory),
+            _ => Err(format!("invalid status: {s}").into()),
         }
     }
 }
 
-#[derive(serde::Serialize)]
+impl<'q> sqlx::Encode<'q, Sqlite> for FaylKind {
+    fn encode_by_ref(
+        &self,
+        buf: &mut Vec<SqliteArgumentValue<'q>>,
+    ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
+        let s = match self {
+            FaylKind::File => "file",
+            FaylKind::Symlink => "symlink",
+            FaylKind::Directory => "directory",
+        };
+
+        <&str as sqlx::Encode<Sqlite>>::encode(s, buf)
+    }
+}
+
+#[derive(serde::Serialize, sqlx::FromRow)]
 struct Fayl {
-    path: PathBuf,
+    path: String,
+    parent: Option<String>,
     kind: FaylKind,
     size: u64,
     last_modified: Option<u64>,
-    checksum: Option<Vec<u8>>,
+    checksum: Option<u64>,
 }
 
 impl From<DirEntry> for Fayl {
@@ -154,12 +178,23 @@ impl From<DirEntry> for Fayl {
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
             .map(|duration| duration.as_secs());
 
+        let checksum = checksum_file(
+            crc_fast::CrcAlgorithm::Crc32Iscsi,
+            &entry.path().to_string_lossy(),
+            None,
+        )
+        .ok();
+
         Fayl {
             kind,
             size,
             last_modified,
-            path: entry.into_path(),
-            checksum: None,
+            checksum,
+            parent: entry
+                .path()
+                .parent()
+                .map(|p| p.to_string_lossy().into_owned()),
+            path: entry.path().to_string_lossy().into_owned(),
         }
     }
 }
@@ -191,47 +226,21 @@ fn dir_size(path: &Path) -> u64 {
         })
 }
 
-fn list_entries(path: &Path, config: &Config) -> Json<Vec<Fayl>> {
-    let mut items: Vec<Fayl> = Vec::new();
-    // let db = config.db();
-    // let mut stmt = match db.prepare(
-    //     r"
-    //     SELECT path, parent, name, kind, size, checksum, last_modified
-    //     FROM fayls
-    //     WHERE parent = ?1
-    //     ORDER BY
-    //         CASE WHEN kind = 'directory' THEN 0 ELSE 1 END,
-    //         name
-    //     ",
-    // ) {
-    //     Ok(stmt) => stmt,
-    //     Err(error) => {
-    //         tracing::error!(
-    //             "failed to prepare list_entries query for {}: {error}",
-    //             path.display()
-    //         );
-    //         return Json(items);
-    //     }
-    // };
-    // let parent = path.to_string_lossy().to_string();
-    //
-    // let rows = match stmt.query_map([parent], |row| Fayl::try_from(row)) {
-    //     Ok(rows) => rows,
-    //     Err(error) => {
-    //         tracing::error!(
-    //             "failed to query entries by parent for {}: {error}",
-    //             path.display()
-    //         );
-    //         return Json(items);
-    //     }
-    // };
-    //
-    // for row in rows {
-    //     match row {
-    //         Ok(fayl) => items.push(fayl),
-    //         Err(error) => tracing::warn!("failed to decode fayls row: {error}"),
-    //     }
-    // }
+async fn list_entries(path: &Path, db: &SqlitePool) -> Json<Vec<Fayl>> {
+    let items = sqlx::query_as::<_, Fayl>(
+        r"
+        SELECT path, parent, kind, size, checksum, last_modified
+        FROM fayls
+        WHERE parent = ?
+        ORDER BY
+            CASE WHEN kind = 'directory' THEN 0 ELSE 1 END,
+            path
+    ",
+    )
+    .bind(path.to_string_lossy().as_ref())
+    .fetch_all(db)
+    .await
+    .unwrap();
 
     Json(items)
 }
@@ -270,11 +279,11 @@ async fn list_files_handler(
     }
 
     let state = depot.obtain::<AppState>().map_err(|_| {
-            tracing::error!("app state missing from depot");
-            StatusError::internal_server_error()
-        })?;
+        tracing::error!("app state missing from depot");
+        StatusError::internal_server_error()
+    })?;
 
-    res.render(list_entries(requested_path, &state.config));
+    res.render(list_entries(requested_path, &state.db).await);
     Ok(())
 }
 
@@ -285,29 +294,47 @@ struct AppState {
     tx: Sender<Event>,
 }
 
+struct EventContext<'a> {
+    config: &'a Config,
+    db: &'a Pool<Sqlite>,
+    tx: Sender<Event>,
+}
+
 pub async fn run_app(config: Config, db: Pool<Sqlite>) {
     let (tx, mut rx) = mpsc::channel::<Event>(16);
-    let exit_tx = tx.clone();
 
-    let state = AppState { config, db, tx };
+    let event_config = config.clone();
+    let event_tx = tx.clone();
+    let event_db = db.clone();
 
-    let event_context = state.clone();
-    let event_handler = tokio::spawn(async move {
+    let cancellation_token = CancellationToken::new();
+    let cloned_token = cancellation_token.clone();
+
+    let mut handle_event = async move || {
         while let Some(event) = rx.recv().await {
-            match event {
-                Event::Quit => {
-                    break;
-                }
-                _ => {
-                    if let Err(err) = handle_event(event, event_context.clone()).await {
-                        tracing::error!("{err}");
-                    }
-                }
+            let ctx = EventContext {
+                config: &event_config,
+                db: &event_db,
+                tx: event_tx.clone(),
+            };
+            if let Err(err) = handle_event(event, &ctx).await {
+                tracing::error!("{err}");
             }
         }
-        tracing::info!("event handler finished, exiting");
+    };
+
+    let event_handler = tokio::spawn(async move {
+        tokio::select! {
+            () = cloned_token.cancelled() => {
+                tracing::info!("event handler stopped");
+            }
+            () = handle_event() => {
+                tracing::info!("event handler finished");
+            }
+        }
     });
 
+    let state = AppState { config, db, tx };
     let sources = state.config.app.sources.clone();
 
     _ = state.tx.send(Event::Scan(sources)).await;
@@ -326,9 +353,9 @@ pub async fn run_app(config: Config, db: Pool<Sqlite>) {
         match signal(SignalKind::terminate()) {
             Ok(mut sigterm) => {
                 _ = sigterm.recv().await;
-                tracing::info!("SIGTERM received, starting graceful shutdown");
+                tracing::info!("SIGTERM received, stopping...");
                 server_handle.stop_graceful(None);
-                _ = exit_tx.send(Event::Quit).await;
+                cancellation_token.cancel();
             }
             _ => {
                 tracing::error!("failed to listen for SIGTERM");

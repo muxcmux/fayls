@@ -43,7 +43,7 @@ impl Config {
 
         match f {
             DefaultConfigFile::Arg(file) => {
-                config = config.add_source(File::with_name(&file).required(false));
+                config = config.add_source(File::with_name(&file).required(true));
             }
             DefaultConfigFile::Static => {
                 for file in DEFAULT_CONFIG_FILES {

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
@@ -143,7 +144,22 @@ fn dir_size(path: &Path) -> u64 {
 }
 
 pub async fn scan(paths: Vec<PathBuf>, batch_size: usize, tx: Sender<Event>) {
+    let paths: HashSet<PathBuf> = paths
+        .iter()
+        .filter_map(|p| {
+            p.canonicalize()
+                .map_err(|err| {
+                    tracing::warn!(
+                        "failed to canonicalize path for source {} ({})",
+                        p.display(),
+                        err
+                    );
+                })
+                .ok()
+        })
+        .collect();
     let mut batch = Vec::with_capacity(batch_size);
+
     for path in paths {
         for entry in WalkDir::new(path).min_depth(1) {
             match entry {

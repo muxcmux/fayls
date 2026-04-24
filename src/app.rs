@@ -19,23 +19,7 @@ async fn handle_event(event: Event, ctx: &EventContext<'_>) -> Result<()> {
         Event::Scan => {
             let tx = ctx.tx.clone();
             let batch_size = ctx.config.app.batch_size;
-            let paths = ctx
-                .config
-                .app
-                .sources
-                .iter()
-                .filter_map(|p| {
-                    p.canonicalize()
-                        .map_err(|err| {
-                            tracing::warn!(
-                                "failed to canonicalize path for source {} ({})",
-                                p.display(),
-                                err
-                            );
-                        })
-                        .ok()
-                })
-                .collect();
+            let paths = ctx.config.app.sources.clone();
             tokio::spawn(async move {
                 fayls::scan(paths, batch_size, tx).await;
             });

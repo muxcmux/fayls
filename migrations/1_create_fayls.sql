@@ -1,10 +1,9 @@
 CREATE TABLE "fayls" (
-  "path" varchar UNIQUE PRIMARY KEY,
+  "name" varchar NOT NULL,
   "parent" varchar,
   "kind" varchar NOT NULL,
   "size" integer NOT NULL,
   "checksum" integer,
-  "last_modified" integer
+  "last_modified" integer,
+  PRIMARY KEY ("parent", "name")
 ) WITHOUT ROWID;
-
-CREATE INDEX "idx_parent" ON "fayls" ("parent");

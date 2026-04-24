@@ -23,7 +23,7 @@ use tokio::{
 use walkdir::{DirEntry, WalkDir};
 
 enum Event {
-    Scan(Vec<PathBuf>),
+    Scan,
     Index(Vec<DirEntry>),
 }
 
@@ -54,26 +54,28 @@ async fn index(entries: Vec<DirEntry>, db: &SqlitePool) -> Result<()> {
     for entry in entries {
         let existing = sqlx::query_as::<_, Fayl>(
             r"
-            SELECT path, parent, kind, size, checksum, last_modified
+            SELECT name, parent, kind, size, checksum, last_modified
             FROM fayls
-            WHERE path = ?
+            WHERE name = ?
+            AND parent = ?
         ",
         )
-        .bind(entry.path().to_string_lossy().as_ref())
+        .bind(entry.file_name().to_string_lossy().as_ref())
+        .bind(entry.path().parent().map(|p| p.to_string_lossy()))
         .fetch_optional(&mut *txn)
         .await?;
 
         if let Some(fayl) = existing {
-            tracing::info!("skipping {}", fayl.path);
+            tracing::info!("skipping {}", fayl.path().display());
         } else {
             let fayl: Fayl = entry.into();
             sqlx::query(
                 r"
-                INSERT INTO fayls (path, parent, kind, size, checksum, last_modified)
+                INSERT INTO fayls (name, parent, kind, size, checksum, last_modified)
                 VALUES (?, ?, ?, ?, ?, ?)
             ",
             )
-            .bind(&fayl.path)
+            .bind(&fayl.name)
             .bind(&fayl.parent)
             .bind(&fayl.kind)
             .bind(fayl.size.cast_signed())
@@ -81,7 +83,7 @@ async fn index(entries: Vec<DirEntry>, db: &SqlitePool) -> Result<()> {
             .bind(fayl.last_modified.map(u64::cast_signed))
             .execute(&mut *txn)
             .await?;
-            tracing::info!("indexed: {}", fayl.path);
+            tracing::info!("indexed: {}", fayl.path().display());
         }
     }
 
@@ -92,9 +94,26 @@ async fn index(entries: Vec<DirEntry>, db: &SqlitePool) -> Result<()> {
 
 async fn handle_event(event: Event, ctx: &EventContext<'_>) -> Result<()> {
     match event {
-        Event::Scan(paths) => {
+        Event::Scan => {
             let tx = ctx.tx.clone();
             let batch_size = ctx.config.app.batch_size;
+            let paths = ctx
+                .config
+                .app
+                .sources
+                .iter()
+                .filter_map(|p| {
+                    p.canonicalize()
+                        .map_err(|err| {
+                            tracing::warn!(
+                                "failed to canonicalize path for source {} ({})",
+                                p.display(),
+                                err
+                            );
+                        })
+                        .ok()
+                })
+                .collect();
             tokio::spawn(async move {
                 scan(paths, batch_size, tx).await;
             });
@@ -150,12 +169,21 @@ impl<'q> sqlx::Encode<'q, Sqlite> for FaylKind {
 
 #[derive(serde::Serialize, sqlx::FromRow)]
 struct Fayl {
-    path: String,
+    name: String,
     parent: Option<String>,
     kind: FaylKind,
     size: u64,
     last_modified: Option<u64>,
     checksum: Option<u64>,
+}
+
+impl Fayl {
+    fn path(&self) -> PathBuf {
+        match &self.parent {
+            Some(p) => Path::new(p).join(&self.name),
+            None => PathBuf::from(&self.name),
+        }
+    }
 }
 
 impl From<DirEntry> for Fayl {
@@ -190,11 +218,11 @@ impl From<DirEntry> for Fayl {
             size,
             last_modified,
             checksum,
+            name: entry.file_name().to_string_lossy().into_owned(),
             parent: entry
                 .path()
                 .parent()
                 .map(|p| p.to_string_lossy().into_owned()),
-            path: entry.path().to_string_lossy().into_owned(),
         }
     }
 }
@@ -229,12 +257,12 @@ fn dir_size(path: &Path) -> u64 {
 async fn list_entries(path: &Path, db: &SqlitePool) -> Json<Vec<Fayl>> {
     let items = sqlx::query_as::<_, Fayl>(
         r"
-        SELECT path, parent, kind, size, checksum, last_modified
+        SELECT name, parent, kind, size, checksum, last_modified
         FROM fayls
         WHERE parent = ?
         ORDER BY
             CASE WHEN kind = 'directory' THEN 0 ELSE 1 END,
-            path
+            name
     ",
     )
     .bind(path.to_string_lossy().as_ref())
@@ -335,9 +363,8 @@ pub async fn run_app(config: Config, db: Pool<Sqlite>) {
     });
 
     let state = AppState { config, db, tx };
-    let sources = state.config.app.sources.clone();
 
-    _ = state.tx.send(Event::Scan(sources)).await;
+    _ = state.tx.send(Event::Scan).await;
 
     let acceptor = TcpListener::new(state.config.server.addr()).bind().await;
 

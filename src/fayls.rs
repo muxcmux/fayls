@@ -13,9 +13,9 @@ use sqlx::{
 use tokio::sync::mpsc::Sender;
 use walkdir::{DirEntry, WalkDir};
 
-use crate::app::Event;
+use crate::{app::Event, content_indexing};
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, PartialEq)]
 pub enum FaylKind {
     File,
     Symlink,
@@ -58,16 +58,18 @@ impl<'q> Encode<'q, Sqlite> for FaylKind {
 
 #[derive(serde::Serialize, sqlx::FromRow)]
 pub struct Fayl {
-    name: String,
-    parent: Option<String>,
-    kind: FaylKind,
-    size: u64,
-    last_modified: Option<u64>,
-    checksum: Option<u64>,
+    pub id: u64,
+    pub name: String,
+    pub parent: Option<String>,
+    pub kind: FaylKind,
+    pub size: u64,
+    pub last_modified: Option<u64>,
+    pub checksum: Option<u64>,
 }
 
 impl Fayl {
-    fn path(&self) -> PathBuf {
+    #[must_use]
+    pub fn path(&self) -> PathBuf {
         match &self.parent {
             Some(p) => Path::new(p).join(&self.name),
             None => PathBuf::from(&self.name),
@@ -103,6 +105,7 @@ impl From<DirEntry> for Fayl {
         .ok();
 
         Fayl {
+            id: 0,
             kind,
             size,
             last_modified,
@@ -183,38 +186,44 @@ pub(crate) async fn index(entries: Vec<DirEntry>, db: &SqlitePool) -> Result<()>
     let mut txn = db.begin().await?;
 
     for entry in entries {
+        let mut new: Fayl = entry.into();
         let existing = sqlx::query_as::<_, Fayl>(
             r"
-            SELECT name, parent, kind, size, checksum, last_modified
+            SELECT id, name, parent, kind, size, checksum, last_modified
             FROM fayls
             WHERE name = ?
             AND parent = ?
         ",
         )
-        .bind(entry.file_name().to_string_lossy().as_ref())
-        .bind(entry.path().parent().map(|p| p.to_string_lossy()))
+        .bind(&new.name)
+        .bind(&new.parent)
         .fetch_optional(&mut *txn)
         .await?;
-
-        if let Some(fayl) = existing {
-            tracing::info!("skipping {}", fayl.path().display());
+        if let Some(existing) = existing {
+            if new.last_modified != existing.last_modified || new.checksum != existing.checksum {
+                new.id = existing.id;
+                content_indexing::index(&new, &mut *txn).await?;
+            } else {
+                tracing::info!("skipping {}", new.name);
+            }
         } else {
-            let fayl: Fayl = entry.into();
-            sqlx::query(
+            let inserted = sqlx::query_as::<_, Fayl>(
                 r"
                 INSERT INTO fayls (name, parent, kind, size, checksum, last_modified)
                 VALUES (?, ?, ?, ?, ?, ?)
+                RETURNING *
             ",
             )
-            .bind(&fayl.name)
-            .bind(&fayl.parent)
-            .bind(&fayl.kind)
-            .bind(fayl.size.cast_signed())
-            .bind(fayl.checksum.map(u64::cast_signed))
-            .bind(fayl.last_modified.map(u64::cast_signed))
-            .execute(&mut *txn)
+            .bind(&new.name)
+            .bind(&new.parent)
+            .bind(&new.kind)
+            .bind(new.size.cast_signed())
+            .bind(new.checksum.map(u64::cast_signed))
+            .bind(new.last_modified.map(u64::cast_signed))
+            .fetch_one(&mut *txn)
             .await?;
-            tracing::info!("indexed: {}", fayl.path().display());
+            content_indexing::index(&inserted, &mut *txn).await?;
+            tracing::info!("indexed: {}", inserted.name);
         }
     }
 

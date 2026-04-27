@@ -6,5 +6,5 @@ app:
   pdftoppm_bin: pdftoppm
   tesseract_bin: tesseract
   batch_size: 1000
-  max_concurrent_batches: 10,
-  max_concurrent_indexes: 10_000,
+  max_concurrent_batches: 10
+  max_concurrent_indexes: 10000

@@ -6,21 +6,14 @@ use salvo::{
     prelude::*,
     writing::Json,
 };
-use sqlx::{Pool, Sqlite, SqlitePool};
+use sqlx::SqlitePool;
 
-use crate::{config::Config, fayls::Fayl};
-
-#[derive(Clone)]
-struct AppContext {
-    config: Config,
-    db: Pool<Sqlite>,
-}
+use crate::{config, fayls::Fayl};
 
 async fn list_entries(path: &Path, db: &SqlitePool) -> Json<Vec<Fayl>> {
     let items = sqlx::query_as::<_, Fayl>(
         r"
-        SELECT name, parent, kind, size, checksum, last_modified
-        FROM fayls
+        SELECT * FROM fayls
         WHERE parent = ?
         ORDER BY
             CASE WHEN kind = 'directory' THEN 0 ELSE 1 END,
@@ -68,22 +61,20 @@ async fn list_files_handler(
         return Err(StatusError::not_found());
     }
 
-    let ctx = depot.obtain::<AppContext>().map_err(|_| {
-        tracing::error!("app state missing from depot");
+    let db = depot.obtain::<SqlitePool>().map_err(|_| {
+        tracing::error!("can' get db");
         StatusError::internal_server_error()
     })?;
 
-    res.render(list_entries(requested_path, &ctx.db).await);
+    res.render(list_entries(requested_path, &db).await);
     Ok(())
 }
 
-pub async fn server(config: Config, db: Pool<Sqlite>) -> (Server<TcpAcceptor>, Router) {
-    let state = AppContext { config, db };
-
-    let acceptor = TcpListener::new(state.config.server.addr()).bind().await;
+pub async fn server(db: SqlitePool) -> (Server<TcpAcceptor>, Router) {
+    let acceptor = TcpListener::new(config::get().server.addr()).bind().await;
 
     let router = Router::new()
-        .hoop(affix_state::inject(state))
+        .hoop(affix_state::inject(db))
         .hoop(force_json_format)
         .get(list_files_handler);
 

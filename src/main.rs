@@ -5,17 +5,16 @@ use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
 async fn main() {
     tracing_subscriber::fmt().init();
 
-    let config =
-        config::load_config().unwrap_or_else(|err| panic!("could not load config:\n{err}"));
+    config::load().unwrap_or_else(|err| panic!("could not load config:\n{err}"));
 
     let opts = SqliteConnectOptions::new()
-        .filename(&config.app.database)
+        .filename(&config::get().app.database)
         .create_if_missing(true);
 
     let pool = SqlitePool::connect_with(opts).await.unwrap_or_else(|err| {
         panic!(
             "failed creating a pool for {}:\n{}",
-            &config.app.database.display(),
+            &config::get().app.database.display(),
             err
         )
     });
@@ -26,10 +25,10 @@ async fn main() {
         .unwrap_or_else(|err| {
             panic!(
                 "failed migrating {}:\n{}",
-                &config.app.database.display(),
+                &config::get().app.database.display(),
                 err
             )
         });
 
-    app::run(config, pool).await;
+    app::run(pool).await;
 }

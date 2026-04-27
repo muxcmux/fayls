@@ -1,6 +1,6 @@
 use config::{Environment, File, FileFormat};
 use serde::Deserialize;
-use std::{env::args, path::PathBuf};
+use std::{env::args, path::PathBuf, sync::OnceLock};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Server {
@@ -19,6 +19,11 @@ impl Server {
 pub struct App {
     pub database: PathBuf,
     pub sources: Vec<PathBuf>,
+    pub tesseract_bin: String,
+    pub pdftoppm_bin: String,
+    pub batch_size: usize,
+    pub max_concurrent_batches: usize,
+    pub max_concurrent_indexes: usize,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -57,11 +62,21 @@ impl Config {
     }
 }
 
-/// # Errors
-/// Configuration errors
-pub fn load_config() -> Result<Config, config::ConfigError> {
+static CONFIG: OnceLock<Config> = OnceLock::new();
+
+#[allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
+pub fn load() -> Result<(), config::ConfigError> {
     let config_file = args()
         .nth(1)
         .map_or_else(|| DefaultConfigFile::Static, DefaultConfigFile::Arg);
-    Config::from_file(config_file)
+    CONFIG
+        .set(Config::from_file(config_file)?)
+        .expect("Config already set");
+
+    Ok(())
+}
+
+#[allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
+pub fn get() -> &'static Config {
+    CONFIG.get().expect("Confing not initialized")
 }

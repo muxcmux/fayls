@@ -1,20 +1,24 @@
-use anyhow::{Context, Result, bail};
-use sqlx::{Executor, Sqlite, SqlitePool};
+use anyhow::{Result, bail};
+use bounded_join_set::JoinSet;
+use sqlx::SqlitePool;
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
 };
-use tokio::process::Command;
+use tokio::{process::Command, sync::mpsc::Receiver};
+use tokio_util::sync::CancellationToken;
 
-use crate::fayls::IndexablePath;
+use crate::{
+    config,
+    fayls::{Fayl, Indexable},
+};
 
 async fn extract_image_content(file_path: &Path) -> Result<String> {
-    let output = Command::new("tesseract")
+    let output = Command::new(&config::get().app.tesseract_bin)
         .arg(file_path)
         .arg("stdout")
         .output()
-        .await
-        .with_context(|| format!("failed running tesseract for {}", file_path.display()))?;
+        .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -25,26 +29,19 @@ async fn extract_image_content(file_path: &Path) -> Result<String> {
         );
     }
 
-    String::from_utf8(output.stdout).with_context(|| {
-        format!(
-            "tesseract output is not valid utf-8 for {}",
-            file_path.display()
-        )
-    })
+    Ok(String::from_utf8_lossy(&output.stdout).into())
 }
 
 async fn extract_pdf_content(file_path: &Path) -> Result<String> {
-    let temp_dir = tempfile::tempdir()
-        .with_context(|| format!("failed creating temp dir for {}", file_path.display()))?;
+    let temp_dir = tempfile::tempdir()?;
     let output_prefix = temp_dir.path().join("page");
 
-    let output = Command::new("pdftoppm")
+    let output = Command::new(&config::get().app.pdftoppm_bin)
         .arg("-png")
         .arg(file_path)
         .arg(&output_prefix)
         .output()
-        .await
-        .with_context(|| format!("failed running pdftoppm for {}", file_path.display()))?;
+        .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -56,20 +53,8 @@ async fn extract_pdf_content(file_path: &Path) -> Result<String> {
     }
 
     let mut page_images = Vec::<PathBuf>::new();
-    let mut entries = tokio::fs::read_dir(temp_dir.path())
-        .await
-        .with_context(|| {
-            format!(
-                "failed reading temporary images directory {}",
-                temp_dir.path().display()
-            )
-        })?;
-    while let Some(entry) = entries.next_entry().await.with_context(|| {
-        format!(
-            "failed reading temporary image entries from {}",
-            temp_dir.path().display()
-        )
-    })? {
+    let mut entries = tokio::fs::read_dir(temp_dir.path()).await?;
+    while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
         if path
             .extension()
@@ -118,33 +103,49 @@ async fn extract_content_from_file(file_path: &Path) -> Result<String> {
     }
 }
 
-pub(crate) async fn index(path: IndexablePath, db: SqlitePool) -> Result<()> {
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-    tracing::info!("indexed content for {}", path.0.display());
+async fn index(fayl: Fayl, db: SqlitePool) -> Result<()> {
+    let file_path = fayl.path();
+    let content = match tokio::fs::read_to_string(&file_path).await {
+        Ok(content) => content,
+        Err(_) => match extract_content_from_file(&file_path).await {
+            Ok(content) => content,
+            Err(err) => {
+                tracing::error!("can't extract contents from {}\n{err}", file_path.display());
+                return Ok(());
+            }
+        },
+    };
+
+    fayl.index(&db, &content).await?;
+
     Ok(())
-    // let file_path = fayl.path();
-    // let content = match tokio::fs::read_to_string(&file_path).await {
-    //     Ok(content) => content,
-    //     Err(_) => match extract_content_from_file(&file_path).await {
-    //         Ok(content) => content,
-    //         Err(err) => {
-    //             tracing::error!("can't extract contents from {}\n{err}", file_path.display());
-    //             return Ok(());
-    //         }
-    //     },
-    // };
-    //
-    // sqlx::query(
-    //     r"
-    //         INSERT INTO content_index (rowid, name, content)
-    //         VALUES (?, ?, ?)
-    //     ",
-    // )
-    // .bind(fayl.id.cast_signed())
-    // .bind(&fayl.name)
-    // .bind(&content)
-    // .execute(db)
-    // .await?;
-    //
-    // Ok(())
+}
+
+pub(crate) async fn start_indexing(
+    db: SqlitePool,
+    mut rx: Receiver<Indexable>,
+    token: CancellationToken,
+) {
+    let mut queue: JoinSet<()> = JoinSet::new(5);
+
+    while let Some(path) = rx.recv().await {
+        if token.is_cancelled() {
+            break;
+        }
+
+        let db = db.clone();
+        queue.spawn(async move {
+            if let Err(err) = index(path.0, db).await {
+                tracing::error!("{err}");
+            }
+        });
+    }
+
+    while queue.join_next().await.is_some() {
+        if token.is_cancelled() {
+            break;
+        }
+    }
+
+    tracing::info!("content indexing stopped");
 }

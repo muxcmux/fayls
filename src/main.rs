@@ -1,5 +1,5 @@
 use fayls::{app, config};
-use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
+use sqlx::{SqlitePool, sqlite::{SqliteConnectOptions, SqliteJournalMode}};
 
 #[tokio::main]
 async fn main() {
@@ -9,6 +9,7 @@ async fn main() {
 
     let opts = SqliteConnectOptions::new()
         .filename(&config::get().app.database)
+        .journal_mode(SqliteJournalMode::Wal)
         .create_if_missing(true);
 
     let pool = SqlitePool::connect_with(opts).await.unwrap_or_else(|err| {

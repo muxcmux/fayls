@@ -170,6 +170,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bounded_join_set"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae18fd8f4a623bcf416b5bc8f1e0905534d9911597ed17cc57ab9b6eed65454d"
+dependencies = [
+ "tokio",
+]
+
+[[package]]
 name = "brotli"
 version = "8.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -726,11 +735,13 @@ name = "fayls"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bounded_join_set",
  "config",
  "crc-fast",
  "salvo",
  "serde",
  "sqlx",
+ "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
@@ -3171,6 +3182,7 @@ dependencies = [
  "bytes",
  "futures-core",
  "futures-sink",
+ "futures-util",
  "pin-project-lite",
  "tokio",
 ]

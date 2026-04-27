@@ -5,12 +5,14 @@ authors = ["muxcmux <storm.bg@gmail.com>"]
 edition = "2024"
 
 [dependencies]
-tokio = { version = "1", features = ["macros", "signal"] }
-tokio-util = "0.7"
+tokio = { version = "1", features = ["macros", "signal", "fs", "process"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+bounded_join_set = "0.3"
 
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate"] }
 
 anyhow = "1"
+tempfile = "3"
 
 salvo ={ version = "0.92", features = ["affix-state"] }
 

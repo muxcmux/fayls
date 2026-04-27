@@ -7,15 +7,13 @@ use salvo::{
     writing::Json,
 };
 use sqlx::{Pool, Sqlite, SqlitePool};
-use tokio::sync::mpsc::Sender;
 
-use crate::{app::Event, config::Config, fayls::Fayl};
+use crate::{config::Config, fayls::Fayl};
 
 #[derive(Clone)]
 struct AppContext {
     config: Config,
     db: Pool<Sqlite>,
-    tx: Sender<Event>,
 }
 
 async fn list_entries(path: &Path, db: &SqlitePool) -> Json<Vec<Fayl>> {
@@ -79,12 +77,8 @@ async fn list_files_handler(
     Ok(())
 }
 
-pub async fn server(
-    config: Config,
-    db: Pool<Sqlite>,
-    tx: Sender<Event>,
-) -> (Server<TcpAcceptor>, Router) {
-    let state = AppContext { config, db, tx };
+pub async fn server(config: Config, db: Pool<Sqlite>) -> (Server<TcpAcceptor>, Router) {
+    let state = AppContext { config, db };
 
     let acceptor = TcpListener::new(state.config.server.addr()).bind().await;
 

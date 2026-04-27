@@ -5,7 +5,8 @@ use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
 async fn main() {
     tracing_subscriber::fmt().init();
 
-    let config = config::load_config().unwrap_or_else(|err| panic!("could not load config:\n{err}"));
+    let config =
+        config::load_config().unwrap_or_else(|err| panic!("could not load config:\n{err}"));
 
     let opts = SqliteConnectOptions::new()
         .filename(&config.app.database)

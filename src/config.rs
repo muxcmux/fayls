@@ -19,7 +19,6 @@ impl Server {
 pub struct App {
     pub database: PathBuf,
     pub sources: Vec<PathBuf>,
-    pub batch_size: usize,
 }
 
 #[derive(Clone, Debug, Deserialize)]

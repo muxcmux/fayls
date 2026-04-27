@@ -1,97 +1,100 @@
-use crate::{api, config::Config, fayls};
-use anyhow::Result;
+use crate::{
+    api,
+    config::Config,
+    content_indexing,
+    fayls::{self, IndexablePath},
+};
+use bounded_join_set::JoinSet;
 use sqlx::{Pool, Sqlite};
-use tokio_util::sync::CancellationToken;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use tokio::{
     signal::unix::{SignalKind, signal},
-    sync::mpsc::{self, Sender},
+    sync::mpsc,
 };
 use walkdir::DirEntry;
 
-pub enum Event {
-    Scan,
-    Index(Vec<DirEntry>),
-}
-
-async fn handle_event(event: Event, ctx: &EventContext<'_>) -> Result<()> {
-    match event {
-        Event::Scan => {
-            let tx = ctx.tx.clone();
-            let batch_size = ctx.config.app.batch_size;
-            let paths = ctx.config.app.sources.clone();
-            tokio::spawn(async move {
-                fayls::scan(paths, batch_size, tx).await;
-            });
-        }
-        Event::Index(entries) => {
-            fayls::index(entries, ctx.db).await?;
-        }
-    }
-
-    Ok(())
-}
-
-struct EventContext<'a> {
-    config: &'a Config,
-    db: &'a Pool<Sqlite>,
-    tx: Sender<Event>,
-}
-
 pub async fn run(config: Config, db: Pool<Sqlite>) {
-    let (tx, mut rx) = mpsc::channel::<Event>(16);
+    let (scan_tx, mut scan_rx) = mpsc::channel::<()>(1);
+    let (batch_tx, mut batch_rx) = mpsc::channel::<Vec<DirEntry>>(100);
+    let (index_tx, mut index_rx) = mpsc::channel::<IndexablePath>(10_000);
 
-    let event_config = config.clone();
-    let event_tx = tx.clone();
-    let event_db = db.clone();
+    let token = CancellationToken::new();
+    let tracker = TaskTracker::new();
 
-    let cancellation_token = CancellationToken::new();
-    let cloned_token = cancellation_token.clone();
+    let scan_token = token.clone();
+    let sources = config.app.sources.clone();
+    tracker.spawn(async move {
+        while scan_rx.recv().await.is_some() {
+            if scan_token.is_cancelled() {
+                break;
+            }
 
-    let mut handle_event_closure = async move || {
-        while let Some(event) = rx.recv().await {
-            let ctx = EventContext {
-                config: &event_config,
-                db: &event_db,
-                tx: event_tx.clone(),
-            };
-            if let Err(err) = handle_event(event, &ctx).await {
+            fayls::scan(&sources, &batch_tx, &scan_token).await;
+        }
+
+        tracing::info!("scanning done");
+    });
+
+    let index_token = token.clone();
+    let index_db = db.clone();
+    tracker.spawn(async move {
+        while let Some(batch) = batch_rx.recv().await {
+            if index_token.is_cancelled() {
+                break;
+            }
+
+            if let Err(err) = fayls::index(batch, &index_db, &index_tx, &index_token).await {
                 tracing::error!("{err}");
             }
         }
-    };
 
-    let event_handler = tokio::spawn(async move {
-        tokio::select! {
-            () = cloned_token.cancelled() => {
-                tracing::info!("event handler stopped");
-            }
-            () = handle_event_closure() => {
-                tracing::info!("event handler finished");
-            }
-        }
+        tracing::info!("batch indexing done");
     });
 
-    _ = tx.send(Event::Scan).await;
+    let content_index_token = token.clone();
+    let content_index_db = db.clone();
+    tracker.spawn(async move {
+        let mut queue: JoinSet<()> = JoinSet::new(5);
 
-    let (server, router) = api::server(config, db, tx).await;
+        while let Some(path) = index_rx.recv().await {
+            if content_index_token.is_cancelled() {
+                break;
+            }
+
+            let content_index_db = content_index_db.clone();
+            queue.spawn(async move {
+                if let Err(err) = content_indexing::index(path, content_index_db).await {
+                    tracing::error!("{err}");
+                }
+            });
+        }
+
+        while queue.join_next().await.is_some() {
+            if content_index_token.is_cancelled() {
+                break;
+            }
+        }
+
+        tracing::info!("content indexing done");
+    });
+
+    let (server, router) = api::server(config, db).await;
     let server_handle = server.handle();
 
-    tokio::spawn(async move {
-        match signal(SignalKind::terminate()) {
-            Ok(mut sigterm) => {
-                _ = sigterm.recv().await;
-                tracing::info!("SIGTERM received, stopping...");
-                server_handle.stop_graceful(None);
-                cancellation_token.cancel();
-            }
-            _ => {
-                tracing::error!("failed to listen for SIGTERM");
-            }
-        }
-    });
+    _ = scan_tx.send(()).await;
 
     server.serve(router).await;
 
-    _ = event_handler.await;
+    match signal(SignalKind::terminate()) {
+        Ok(mut sigterm) => {
+            _ = sigterm.recv().await;
+            tracing::info!("SIGTERM received, stopping...");
+            token.cancel();
+            server_handle.stop_graceful(None);
+        }
+        _ => {
+            tracing::error!("failed to listen for SIGTERM");
+        }
+    }
 }

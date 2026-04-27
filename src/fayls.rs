@@ -4,6 +4,7 @@ use std::{
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
+use tokio_util::sync::CancellationToken;
 
 use crc_fast::checksum_file;
 use sqlx::{
@@ -12,8 +13,6 @@ use sqlx::{
 };
 use tokio::sync::mpsc::Sender;
 use walkdir::{DirEntry, WalkDir};
-
-use crate::{app::Event, content_indexing};
 
 #[derive(serde::Serialize, PartialEq)]
 pub enum FaylKind {
@@ -56,6 +55,8 @@ impl<'q> Encode<'q, Sqlite> for FaylKind {
     }
 }
 
+pub struct IndexablePath(pub PathBuf);
+
 #[derive(serde::Serialize, sqlx::FromRow)]
 pub struct Fayl {
     pub id: u64,
@@ -73,6 +74,13 @@ impl Fayl {
         match &self.parent {
             Some(p) => Path::new(p).join(&self.name),
             None => PathBuf::from(&self.name),
+        }
+    }
+
+    pub(crate) fn indexable_path(&self) -> Option<IndexablePath> {
+        match &self.kind {
+            FaylKind::File => Some(IndexablePath(self.path())),
+            _ => None,
         }
     }
 }
@@ -146,7 +154,9 @@ fn dir_size(path: &Path) -> u64 {
         })
 }
 
-pub async fn scan(paths: Vec<PathBuf>, batch_size: usize, tx: Sender<Event>) {
+const BATCH_SIZE: usize = 10;
+
+pub async fn scan(paths: &[PathBuf], tx: &Sender<Vec<DirEntry>>, token: &CancellationToken) {
     let paths: HashSet<PathBuf> = paths
         .iter()
         .filter_map(|p| {
@@ -161,15 +171,19 @@ pub async fn scan(paths: Vec<PathBuf>, batch_size: usize, tx: Sender<Event>) {
                 .ok()
         })
         .collect();
-    let mut batch = Vec::with_capacity(batch_size);
+    let mut batch = Vec::with_capacity(BATCH_SIZE);
 
     for path in paths {
         for entry in WalkDir::new(path).min_depth(1) {
+            if token.is_cancelled() {
+                return;
+            }
+
             match entry {
                 Ok(entry) => {
                     batch.push(entry);
-                    if batch.len() >= batch_size {
-                        _ = tx.send(Event::Index(std::mem::take(&mut batch))).await;
+                    if batch.len() >= BATCH_SIZE {
+                        _ = tx.send(std::mem::take(&mut batch)).await;
                     }
                 }
                 Err(error) => tracing::warn!("failed to read directory entry: {error}"),
@@ -178,21 +192,33 @@ pub async fn scan(paths: Vec<PathBuf>, batch_size: usize, tx: Sender<Event>) {
     }
 
     if !batch.is_empty() {
-        _ = tx.send(Event::Index(batch)).await;
+        _ = tx.send(batch).await;
     }
 }
 
-pub(crate) async fn index(entries: Vec<DirEntry>, db: &SqlitePool) -> Result<()> {
+pub(crate) async fn index(
+    entries: Vec<DirEntry>,
+    db: &SqlitePool,
+    tx: &Sender<IndexablePath>,
+    token: &CancellationToken,
+) -> Result<()> {
     let mut txn = db.begin().await?;
+    let mut paths_to_index = Vec::with_capacity(entries.len());
 
     for entry in entries {
-        let mut new: Fayl = entry.into();
+        if token.is_cancelled() {
+            break;
+        }
+
+        let new = Fayl::from(entry);
+
         let existing = sqlx::query_as::<_, Fayl>(
             r"
             SELECT id, name, parent, kind, size, checksum, last_modified
             FROM fayls
             WHERE name = ?
             AND parent = ?
+            LIMIT 1
         ",
         )
         .bind(&new.name)
@@ -201,17 +227,27 @@ pub(crate) async fn index(entries: Vec<DirEntry>, db: &SqlitePool) -> Result<()>
         .await?;
         if let Some(existing) = existing {
             if new.last_modified != existing.last_modified || new.checksum != existing.checksum {
-                new.id = existing.id;
-                content_indexing::index(&new, &mut *txn).await?;
-            } else {
-                tracing::info!("skipping {}", new.name);
+                sqlx::query(
+                    r"
+                    UPDATE fayls
+                    SET size = ?, checksum = ?, last_modified = ?
+                    WHERE id = ?
+                ",
+                )
+                .bind(new.size.cast_signed())
+                .bind(new.checksum.map(u64::cast_signed))
+                .bind(new.last_modified.map(u64::cast_signed))
+                .bind(existing.id.cast_signed())
+                .execute(&mut *txn)
+                .await?;
+                tracing::info!("reindexed: {}", &new.path().display());
+                paths_to_index.push(new.indexable_path());
             }
         } else {
-            let inserted = sqlx::query_as::<_, Fayl>(
+            sqlx::query(
                 r"
                 INSERT INTO fayls (name, parent, kind, size, checksum, last_modified)
                 VALUES (?, ?, ?, ?, ?, ?)
-                RETURNING *
             ",
             )
             .bind(&new.name)
@@ -220,14 +256,22 @@ pub(crate) async fn index(entries: Vec<DirEntry>, db: &SqlitePool) -> Result<()>
             .bind(new.size.cast_signed())
             .bind(new.checksum.map(u64::cast_signed))
             .bind(new.last_modified.map(u64::cast_signed))
-            .fetch_one(&mut *txn)
+            .execute(&mut *txn)
             .await?;
-            content_indexing::index(&inserted, &mut *txn).await?;
-            tracing::info!("indexed: {}", inserted.name);
+            tracing::info!("indexed: {}", &new.path().display());
+            paths_to_index.push(new.indexable_path());
         }
     }
 
     txn.commit().await?;
+
+    for path in paths_to_index.into_iter().flatten() {
+        if token.is_cancelled() {
+            break;
+        }
+
+        tx.send(path).await?;
+    }
 
     Ok(())
 }

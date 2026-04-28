@@ -8,10 +8,7 @@ use std::{
 use tokio::{process::Command, sync::mpsc::Receiver};
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    config,
-    fayls::{Fayl, Indexable},
-};
+use crate::{config, fayls::ContentIndexable};
 
 async fn extract_image_content(file_path: &Path) -> Result<String> {
     let output = Command::new(&config::get().app.tesseract_bin)
@@ -87,55 +84,73 @@ async fn extract_pdf_content(file_path: &Path) -> Result<String> {
     Ok(content)
 }
 
-async fn extract_content_from_file(file_path: &Path) -> Result<String> {
-    let ext = file_path
-        .extension()
-        .and_then(OsStr::to_str)
-        .map(str::to_ascii_lowercase)
-        .ok_or_else(|| anyhow::anyhow!("{} has no file extension", file_path.display()))?;
-
-    match ext.as_str() {
-        "pdf" => extract_pdf_content(file_path).await,
-        "png" | "jpg" | "jpeg" | "tif" | "tiff" | "bmp" | "gif" | "webp" => {
-            extract_image_content(file_path).await
-        }
-        _ => bail!("unsupported file extension for content extraction: {ext}"),
+async fn extract_content_from_file(file_path: &Path) -> Result<Option<String>> {
+    match file_path.extension().into() {
+        IndexableFileType::Pdf => Ok(Some(extract_pdf_content(file_path).await?)),
+        IndexableFileType::Image => Ok(Some(extract_image_content(file_path).await?)),
+        IndexableFileType::Ignored => Ok(None),
+        _ => Ok(Some(
+            tokio::fs::read_to_string(&file_path)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?,
+        )),
     }
 }
 
-async fn index(fayl: Fayl, db: SqlitePool) -> Result<()> {
-    let file_path = fayl.path();
-    let content = match tokio::fs::read_to_string(&file_path).await {
-        Ok(content) => content,
-        Err(_) => match extract_content_from_file(&file_path).await {
-            Ok(content) => content,
-            Err(err) => {
-                tracing::error!("can't extract contents from {}\n{err}", file_path.display());
-                return Ok(());
-            }
-        },
-    };
+enum IndexableFileType {
+    Pdf,
+    Image,
+    Ignored,
+    Unknown,
+    Other,
+}
 
-    fayl.index(&db, &content).await?;
+impl From<Option<&OsStr>> for IndexableFileType {
+    fn from(value: Option<&OsStr>) -> Self {
+        match value.and_then(OsStr::to_str).map(str::to_ascii_lowercase) {
+            None => Self::Unknown,
+            Some(s) => {
+                if config::get().app.ignore_extensions.contains(&s) {
+                    return Self::Ignored;
+                }
+
+                match s.as_ref() {
+                    "pdf" => Self::Pdf,
+                    "png" | "jpg" | "jpeg" | "tif" | "tiff" | "bmp" | "gif" | "webp" => Self::Image,
+                    _ => Self::Other,
+                }
+            }
+        }
+    }
+}
+
+async fn index(mut indexable: ContentIndexable, db: SqlitePool) -> Result<()> {
+    if let Some(content) = extract_content_from_file(indexable.fayl().path().as_ref()).await? {
+        indexable.index_content(&db, &content).await?;
+    } else {
+        indexable.mark_as_indexed(&db).await?;
+    }
+
+    tracing::info!("indexed {}", indexable.fayl().path().display());
 
     Ok(())
 }
 
 pub(crate) async fn start_indexing(
     db: SqlitePool,
-    mut rx: Receiver<Indexable>,
+    mut rx: Receiver<ContentIndexable>,
     token: CancellationToken,
 ) {
-    let mut queue: JoinSet<()> = JoinSet::new(5);
+    let mut queue: JoinSet<()> = JoinSet::new(config::get().app.max_concurrent_indexers);
 
-    while let Some(path) = rx.recv().await {
+    while let Some(indexable) = rx.recv().await {
         if token.is_cancelled() {
             break;
         }
 
         let db = db.clone();
         queue.spawn(async move {
-            if let Err(err) = index(path.0, db).await {
+            if let Err(err) = index(indexable, db).await {
                 tracing::error!("{err}");
             }
         });

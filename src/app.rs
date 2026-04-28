@@ -1,6 +1,6 @@
 use crate::{
     api, config, content_indexing,
-    fayls::{self, Indexable},
+    fayls::{self, ContentIndexable},
 };
 use sqlx::SqlitePool;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -14,8 +14,8 @@ use walkdir::DirEntry;
 pub async fn run(db: SqlitePool) {
     let cfg = &config::get().app;
     let (scan_tx, scan_rx) = mpsc::channel::<()>(1);
-    let (batch_tx, batch_rx) = mpsc::channel::<Vec<DirEntry>>(cfg.max_concurrent_batches);
-    let (index_tx, index_rx) = mpsc::channel::<Indexable>(cfg.max_concurrent_indexes);
+    let (batch_tx, batch_rx) = mpsc::channel::<Vec<DirEntry>>(cfg.batch_queue_size);
+    let (index_tx, index_rx) = mpsc::channel::<ContentIndexable>(cfg.index_queue_size);
 
     let token = CancellationToken::new();
     let tracker = TaskTracker::new();

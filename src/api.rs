@@ -8,10 +8,10 @@ use salvo::{
 };
 use sqlx::SqlitePool;
 
-use crate::{config, fayls::Fayl};
+use crate::{config, fayls::ExistingFayl};
 
-async fn list_entries(path: &Path, db: &SqlitePool) -> Json<Vec<Fayl>> {
-    let items = sqlx::query_as::<_, Fayl>(
+async fn list_entries(path: &Path, db: &SqlitePool) -> Json<Vec<ExistingFayl>> {
+    let items = sqlx::query_as::<_, ExistingFayl>(
         r"
         SELECT * FROM fayls
         WHERE parent = ?

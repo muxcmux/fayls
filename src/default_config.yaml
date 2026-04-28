@@ -6,5 +6,47 @@ app:
   pdftoppm_bin: pdftoppm
   tesseract_bin: tesseract
   batch_size: 1000
-  max_concurrent_batches: 10
-  max_concurrent_indexes: 10000
+  batch_queue_size: 10
+  index_queue_size: 10000
+  max_concurrent_indexers: 12
+  ignore_extensions:
+    - zip
+    - gz
+    - iso
+    - bin
+    - exe
+    - dmg
+    - ics
+    - qtz
+    - msd
+    - gpg
+    - key
+    - svg
+    - apk
+    - bmpr
+    - ttf
+    - otf
+    - woff2
+    - psd
+    - ai
+    - eps
+    - swf
+    - fla
+    - xls
+    - xslx
+    - doc
+    - docx
+    - sketch
+    - webm
+    - heic
+    - mid
+    - midi
+    - mp3
+    - mp4
+    - m4a
+    - m4p
+    - m4v
+    - mkv
+    - mov
+    - avi
+    - ovpn

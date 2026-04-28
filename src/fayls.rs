@@ -57,10 +57,17 @@ impl<'q> Encode<'q, Sqlite> for FaylKind {
     }
 }
 
-pub struct Indexable(pub Fayl);
+struct NewFayl {
+    name: String,
+    parent: Option<String>,
+    kind: FaylKind,
+    size: i64,
+    last_modified: Option<i64>,
+    checksum: Option<i64>,
+}
 
 #[derive(serde::Serialize, sqlx::FromRow)]
-pub struct Fayl {
+pub struct ExistingFayl {
     pub id: i64,
     pub name: String,
     pub parent: Option<String>,
@@ -68,66 +75,69 @@ pub struct Fayl {
     pub size: i64,
     pub last_modified: Option<i64>,
     pub checksum: Option<i64>,
-    pub content_indexed: i64,
+    pub indexed: i64,
 }
 
-impl Fayl {
+pub struct ContentIndexable(ExistingFayl);
+
+impl ContentIndexable {
     #[must_use]
-    pub fn path(&self) -> PathBuf {
-        match &self.parent {
-            Some(p) => Path::new(p).join(&self.name),
-            None => PathBuf::from(&self.name),
-        }
+    pub fn fayl(&self) -> &ExistingFayl {
+        &self.0
     }
 
-    #[allow(clippy::wrong_self_convention)]
-    pub(crate) fn to_indexable(self) -> Option<Indexable> {
-        match self.kind {
-            FaylKind::File => Some(Indexable(self)),
-            _ => None,
-        }
-    }
+    pub(crate) async fn index_content(
+        &mut self,
+        db: &SqlitePool,
+        content: &str,
+    ) -> Result<(), sqlx::Error> {
+        let mut txn = db.begin().await?;
 
-    async fn existing<'e, E>(&self, db: E) -> Result<Option<Self>, sqlx::Error>
-    where
-        E: Executor<'e, Database = Sqlite>,
-    {
-        sqlx::query_as::<_, Self>("SELECT * FROM fayls WHERE name = ? AND parent = ? LIMIT 1")
-            .bind(&self.name)
-            .bind(&self.parent)
-            .fetch_optional(db)
-            .await
-    }
-
-    async fn touch<'e, E>(&mut self, id: i64, db: E) -> Result<(), sqlx::Error>
-    where
-        E: Executor<'e, Database = Sqlite>,
-    {
-        *self = sqlx::query_as::<_, Self>(
+        sqlx::query(
             r"
-            UPDATE fayls
-            SET size = ?, checksum = ?, last_modified = ?
-            WHERE id = ?
+            INSERT INTO content_index (rowid, name, content)
+            VALUES (?, ?, ?)
             ",
         )
-        .bind(self.size)
-        .bind(self.checksum)
-        .bind(self.last_modified)
-        .bind(id)
-        .fetch_one(db)
+        .bind(self.0.id)
+        .bind(&self.0.name)
+        .bind(content)
+        .execute(&mut *txn)
         .await?;
 
+        self.0.mark_as_indexed(&mut *txn).await?;
+
+        txn.commit().await?;
         Ok(())
     }
 
-    async fn insert<'e, E>(&mut self, db: E) -> Result<(), sqlx::Error>
+    pub(crate) async fn mark_as_indexed(&mut self, db: &SqlitePool) -> Result<(), sqlx::Error> {
+        self.0.mark_as_indexed(db).await
+    }
+}
+
+impl NewFayl {
+    async fn find_existing<'e, E>(&self, db: E) -> Result<Option<ExistingFayl>, sqlx::Error>
     where
         E: Executor<'e, Database = Sqlite>,
     {
-        *self = sqlx::query_as::<_, Self>(
+        sqlx::query_as::<_, ExistingFayl>(
+            "SELECT * FROM fayls WHERE name = ? AND parent = ? LIMIT 1",
+        )
+        .bind(&self.name)
+        .bind(&self.parent)
+        .fetch_optional(db)
+        .await
+    }
+
+    async fn insert<'e, E>(self, db: E) -> Result<ExistingFayl, sqlx::Error>
+    where
+        E: Executor<'e, Database = Sqlite>,
+    {
+        sqlx::query_as::<_, ExistingFayl>(
             r"
-            INSERT INTO fayls (name, parent, kind, size, checksum, last_modified)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO fayls (name, parent, kind, size, checksum, last_modified, indexed)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             RETURNING *
             ",
         )
@@ -137,48 +147,78 @@ impl Fayl {
         .bind(self.size)
         .bind(self.checksum)
         .bind(self.last_modified)
+        .bind(i32::from(FaylKind::File != self.kind))
+        .fetch_one(db)
+        .await
+    }
+}
+
+impl ExistingFayl {
+    #[must_use]
+    pub fn path(&self) -> PathBuf {
+        match &self.parent {
+            Some(p) => Path::new(p).join(&self.name),
+            None => PathBuf::from(&self.name),
+        }
+    }
+
+    fn into_content_indexable(self) -> Option<ContentIndexable> {
+        match self.kind {
+            FaylKind::File => Some(ContentIndexable(self)),
+            _ => None,
+        }
+    }
+
+    async fn touch<'e, E>(
+        &mut self,
+        size: i64,
+        checksum: Option<i64>,
+        last_modified: Option<i64>,
+        db: E,
+    ) -> Result<(), sqlx::Error>
+    where
+        E: Executor<'e, Database = Sqlite>,
+    {
+        *self = sqlx::query_as::<_, Self>(
+            r"
+            UPDATE fayls
+            SET size = ?, checksum = ?, last_modified = ?
+            WHERE id = ?
+            RETURNING *
+            ",
+        )
+        .bind(size)
+        .bind(checksum)
+        .bind(last_modified)
+        .bind(self.id)
         .fetch_one(db)
         .await?;
 
         Ok(())
     }
 
-    async fn is_indexed<'e, E>(&self, db: E) -> bool
-    where
-        E: Executor<'e, Database = Sqlite>,
-    {
-        sqlx::query("SELECT id FROM content_index WHERE rowid = ?")
-            .bind(self.id)
-            .fetch_optional(db)
-            .await
-            .is_ok_and(|r| r.is_some())
+    fn is_indexed(&self) -> bool {
+        self.indexed == 1
     }
 
-    pub(crate) async fn index<'e, E>(&self, db: E, content: &str) -> Result<(), sqlx::Error>
+    async fn mark_as_indexed<'e, E>(&mut self, db: E) -> Result<(), sqlx::Error>
     where
         E: Executor<'e, Database = Sqlite>,
     {
-        sqlx::query(
-            r"
-                INSERT INTO content_index (rowid, name, content)
-                VALUES (?, ?, ?)
-            ",
-        )
-        .bind(self.id)
-        .bind(&self.name)
-        .bind(content)
-        .execute(db)
-        .await?;
+        *self = sqlx::query_as::<_, Self>("UPDATE fayls SET indexed = 1 WHERE id = ? RETURNING *")
+            .bind(self.id)
+            .fetch_one(db)
+            .await?;
 
         Ok(())
     }
 
-    fn is_outdated(&self, other: &Self) -> bool {
-        self.last_modified != other.last_modified || self.checksum != other.checksum
+    fn is_outdated(&self, new: &NewFayl) -> bool {
+        self.last_modified != new.last_modified || self.checksum != new.checksum
     }
 }
 
-impl From<DirEntry> for Fayl {
+impl From<DirEntry> for NewFayl {
     fn from(entry: DirEntry) -> Self {
         let metadata = entry.metadata().ok();
         let kind = if entry.file_type().is_dir() {
@@ -207,13 +247,11 @@ impl From<DirEntry> for Fayl {
         .ok()
         .map(u64::cast_signed);
 
-        Fayl {
-            id: 0,
+        Self {
             kind,
             size,
             last_modified,
             checksum,
-            content_indexed: 0,
             name: entry.file_name().to_string_lossy().into_owned(),
             parent: entry
                 .path()
@@ -250,8 +288,6 @@ fn dir_size(path: &Path) -> u64 {
         })
 }
 
-const BATCH_SIZE: usize = 1000;
-
 pub async fn start_scanning(
     mut rx: Receiver<()>,
     tx: Sender<Vec<DirEntry>>,
@@ -269,6 +305,8 @@ pub async fn start_scanning(
 }
 
 async fn scan(tx: &Sender<Vec<DirEntry>>, token: &CancellationToken) {
+    let batch_size = config::get().app.batch_size;
+
     let paths: HashSet<PathBuf> = config::get()
         .app
         .sources
@@ -285,7 +323,7 @@ async fn scan(tx: &Sender<Vec<DirEntry>>, token: &CancellationToken) {
                 .ok()
         })
         .collect();
-    let mut batch = Vec::with_capacity(BATCH_SIZE);
+    let mut batch = Vec::with_capacity(batch_size);
 
     for path in paths {
         for entry in WalkDir::new(path).min_depth(1) {
@@ -296,7 +334,7 @@ async fn scan(tx: &Sender<Vec<DirEntry>>, token: &CancellationToken) {
             match entry {
                 Ok(entry) => {
                     batch.push(entry);
-                    if batch.len() >= BATCH_SIZE {
+                    if batch.len() >= batch_size {
                         _ = tx.send(std::mem::take(&mut batch)).await;
                     }
                 }
@@ -313,7 +351,7 @@ async fn scan(tx: &Sender<Vec<DirEntry>>, token: &CancellationToken) {
 pub(crate) async fn start_indexing(
     db: SqlitePool,
     mut rx: Receiver<Vec<DirEntry>>,
-    tx: Sender<Indexable>,
+    tx: Sender<ContentIndexable>,
     token: CancellationToken,
 ) {
     while let Some(batch) = rx.recv().await {
@@ -332,7 +370,7 @@ pub(crate) async fn start_indexing(
 async fn index(
     entries: Vec<DirEntry>,
     db: &SqlitePool,
-    tx: &Sender<Indexable>,
+    tx: &Sender<ContentIndexable>,
     token: &CancellationToken,
 ) -> Result<()> {
     let mut txn = db.begin().await?;
@@ -343,33 +381,38 @@ async fn index(
             break;
         }
 
-        let mut new = Fayl::from(entry);
+        let new = NewFayl::from(entry);
 
-        let existing = new.existing(&mut *txn).await?;
+        let existing = new.find_existing(&mut *txn).await?;
 
-        if let Some(existing) = existing {
-            if new.is_outdated(&existing) {
-                new.touch(existing.id, &mut *txn).await?;
-                tracing::info!("reindexed: {}", &new.path().display());
-                indexables.push(new.to_indexable());
-            } else if !existing.is_indexed(&mut *txn).await {
-                indexables.push(new.to_indexable());
+        if let Some(mut existing) = existing {
+            if existing.is_outdated(&new) {
+                existing
+                    .touch(new.size, new.checksum, new.last_modified, &mut *txn)
+                    .await?;
+                tracing::info!("reindexed: {}", &existing.path().display());
+                indexables.push(existing.into_content_indexable());
+            } else if !existing.is_indexed() {
+                tracing::info!("reindexed: {}", &existing.path().display());
+                indexables.push(existing.into_content_indexable());
             }
         } else {
-            new.insert(&mut *txn).await?;
-            tracing::info!("indexed: {}", &new.path().display());
-            indexables.push(new.to_indexable());
+            let existing = new.insert(&mut *txn).await?;
+            tracing::info!("indexed: {}", &existing.path().display());
+            if !existing.is_indexed() {
+                indexables.push(existing.into_content_indexable());
+            }
         }
     }
 
     txn.commit().await?;
 
-    for path in indexables.into_iter().flatten() {
+    for item in indexables.into_iter().flatten() {
         if token.is_cancelled() {
             break;
         }
 
-        tx.send(path).await?;
+        tx.send(item).await?;
     }
 
     Ok(())

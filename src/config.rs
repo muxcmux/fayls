@@ -16,8 +16,13 @@ impl Server {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+pub struct Database {
+    pub path: PathBuf,
+    pub max_connections: u32,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct App {
-    pub database: PathBuf,
     pub sources: Vec<PathBuf>,
     pub tesseract_bin: String,
     pub pdftoppm_bin: String,
@@ -30,6 +35,7 @@ pub struct App {
 #[derive(Clone, Debug, Deserialize)]
 pub struct Config {
     pub server: Server,
+    pub database: Database,
     pub app: App,
 }
 

@@ -149,13 +149,13 @@ pub(crate) async fn start_indexing(
 
     while let Some(indexable) = rx.recv().await {
         if token.is_cancelled() {
+            tracing::info!("breaking content indexing recv loop");
             break;
         }
 
-        let sem = semaphore.clone();
         let db = db.clone();
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
         queue.spawn(async move {
-            let permit = sem.acquire_owned().await.unwrap();
             if let Err(err) = index(indexable, db).await {
                 tracing::error!("{err}");
             }

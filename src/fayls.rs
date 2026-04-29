@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
@@ -23,7 +23,7 @@ use walkdir::{DirEntry, WalkDir};
 
 use crate::config;
 
-#[derive(serde::Serialize, PartialEq)]
+#[derive(Clone, serde::Serialize, PartialEq)]
 pub enum FaylKind {
     File,
     Symlink,
@@ -73,7 +73,7 @@ struct NewFayl {
     checksum: Option<i64>,
 }
 
-#[derive(serde::Serialize, sqlx::FromRow)]
+#[derive(Clone, serde::Serialize, sqlx::FromRow)]
 pub struct ExistingFayl {
     pub id: i64,
     pub name: String,
@@ -124,6 +124,13 @@ impl ContentIndexable {
 }
 
 impl NewFayl {
+    pub fn path(&self) -> PathBuf {
+        match &self.parent {
+            Some(p) => Path::new(p).join(&self.name),
+            None => PathBuf::from(&self.name),
+        }
+    }
+
     async fn find_existing<'e, E>(&self, db: E) -> Result<Option<ExistingFayl>, sqlx::Error>
     where
         E: Executor<'e, Database = Sqlite>,
@@ -367,17 +374,17 @@ pub(crate) async fn start_indexing(
 
     while let Some(batch) = rx.recv().await {
         if token.is_cancelled() {
+            tracing::info!("breaking indexing recv loop");
             break;
         }
 
         let db = db.clone();
         let tx = tx.clone();
         let token = token.clone();
-        let sem = semaphore.clone();
+        let permit = semaphore.clone().acquire_owned().await.unwrap();
         queue.spawn(async move {
-            let permit = sem.acquire_owned().await.unwrap();
             if let Err(err) = index(batch, db, tx, token).await {
-                tracing::error!("{err}");
+                tracing::error!("batch error: {err}");
             }
             drop(permit);
         });
@@ -392,8 +399,9 @@ async fn index(
     tx: UnboundedSender<ContentIndexable>,
     token: CancellationToken,
 ) -> Result<()> {
-    let mut txn = db.begin().await?;
-    let mut indexables = Vec::with_capacity(entries.len());
+    let mut to_reindex = Vec::with_capacity(entries.len());
+    let mut to_insert = Vec::with_capacity(entries.len());
+    let mut to_update = Vec::with_capacity(entries.len());
 
     for entry in entries {
         if token.is_cancelled() {
@@ -402,31 +410,47 @@ async fn index(
 
         let new = NewFayl::from(entry);
 
-        let existing = new.find_existing(&mut *txn).await?;
+        let existing = new
+            .find_existing(&db)
+            .await
+            .map_err(|_| anyhow!("find existing failed"))?;
 
-        if let Some(mut existing) = existing {
+        if let Some(existing) = existing {
             if existing.is_outdated(&new) {
-                existing
-                    .touch(new.size, new.checksum, new.last_modified, &mut *txn)
-                    .await?;
-                tracing::info!("reindexed: {}", &existing.path().display());
-                indexables.push(existing.into_content_indexable());
+                tracing::info!("reindexing: {}", &existing.path().display());
+                to_update.push((existing, new.size, new.checksum, new.last_modified));
             } else if !existing.is_processed() {
-                tracing::info!("reindexed: {}", &existing.path().display());
-                indexables.push(existing.into_content_indexable());
+                tracing::info!("reindexing: {}", &existing.path().display());
+                to_reindex.push(existing.into_content_indexable());
             }
         } else {
-            let existing = new.insert(&mut *txn).await?;
-            tracing::info!("indexed: {}", &existing.path().display());
-            if !existing.is_processed() {
-                indexables.push(existing.into_content_indexable());
-            }
+            tracing::info!("indexing: {}", new.path().display());
+            to_insert.push(new);
         }
     }
 
-    txn.commit().await?;
+    let mut txn = db.begin().await.map_err(|_| anyhow!("txn failed"))?;
+    for new in to_insert {
+        let existing = new
+            .insert(&mut *txn)
+            .await
+            .map_err(|_| anyhow!("insert failed"))?;
+        if !existing.is_processed() {
+            to_reindex.push(existing.into_content_indexable());
+        }
+    }
+    for (mut existing, size, checksum, last_modified) in to_update {
+        existing
+            .touch(size, checksum, last_modified, &mut *txn)
+            .await
+            .map_err(|_| anyhow!("existing touch failed"))?;
+        to_reindex.push(existing.into_content_indexable());
+    }
+    txn.commit()
+        .await
+        .map_err(|_| anyhow!("txn commit failed"))?;
 
-    for item in indexables.into_iter().flatten() {
+    for item in to_reindex.into_iter().flatten() {
         if token.is_cancelled() {
             break;
         }

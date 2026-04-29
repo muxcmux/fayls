@@ -25,3 +25,6 @@ crc-fast = "1"
 serde = { version = "1", features = ["derive"] }
 
 config = "0.15"
+
+[profile.release]
+lto = true

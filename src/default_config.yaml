@@ -6,8 +6,8 @@ app:
   pdftoppm_bin: pdftoppm
   tesseract_bin: tesseract
   batch_size: 1000
-  batch_queue_size: 10
-  index_queue_size: 10000
+  batch_queue_size: 1000
+  max_concurrent_batches: 10
   max_concurrent_indexers: 12
   ignore_extensions:
     - zip

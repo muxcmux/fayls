@@ -6,6 +6,6 @@ CREATE TABLE "fayls" (
   "size" integer NOT NULL,
   "checksum" integer,
   "last_modified" integer,
-  "indexed" integer NOT NULL DEFAULT 0,
+  "processed" integer NOT NULL DEFAULT 0,
   UNIQUE ("parent", "name")
 );

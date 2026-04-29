@@ -1,11 +1,15 @@
 use anyhow::{Result, bail};
-use bounded_join_set::JoinSet;
 use sqlx::SqlitePool;
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
+    sync::Arc,
 };
-use tokio::{process::Command, sync::mpsc::Receiver};
+use tokio::{
+    process::Command,
+    sync::{Semaphore, mpsc::UnboundedReceiver},
+    task::JoinSet,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{config, fayls::ContentIndexable};
@@ -125,10 +129,9 @@ impl From<Option<&OsStr>> for IndexableFileType {
 }
 
 async fn index(mut indexable: ContentIndexable, db: SqlitePool) -> Result<()> {
-    if let Some(content) = extract_content_from_file(indexable.fayl().path().as_ref()).await? {
-        indexable.index_content(&db, &content).await?;
-    } else {
-        indexable.mark_as_indexed(&db).await?;
+    match extract_content_from_file(indexable.fayl().path().as_ref()).await {
+        Ok(Some(content)) => indexable.index_content(&db, &content).await?,
+        _ => indexable.mark_as_processed(&db).await?,
     }
 
     tracing::info!("indexed {}", indexable.fayl().path().display());
@@ -138,28 +141,26 @@ async fn index(mut indexable: ContentIndexable, db: SqlitePool) -> Result<()> {
 
 pub(crate) async fn start_indexing(
     db: SqlitePool,
-    mut rx: Receiver<ContentIndexable>,
+    mut rx: UnboundedReceiver<ContentIndexable>,
     token: CancellationToken,
 ) {
-    let mut queue: JoinSet<()> = JoinSet::new(config::get().app.max_concurrent_indexers);
+    let mut queue: JoinSet<()> = JoinSet::new();
+    let semaphore = Arc::new(Semaphore::new(config::get().app.max_concurrent_indexers));
 
     while let Some(indexable) = rx.recv().await {
         if token.is_cancelled() {
             break;
         }
 
+        let sem = semaphore.clone();
         let db = db.clone();
         queue.spawn(async move {
+            let permit = sem.acquire_owned().await.unwrap();
             if let Err(err) = index(indexable, db).await {
                 tracing::error!("{err}");
             }
+            drop(permit);
         });
-    }
-
-    while queue.join_next().await.is_some() {
-        if token.is_cancelled() {
-            break;
-        }
     }
 
     tracing::info!("content indexing stopped");

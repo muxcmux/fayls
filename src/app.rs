@@ -1,5 +1,5 @@
 use crate::{
-    api, config, content_indexing,
+    api, content_indexing,
     fayls::{self, ContentIndexable},
 };
 use sqlx::SqlitePool;
@@ -12,10 +12,9 @@ use tokio::{
 use walkdir::DirEntry;
 
 pub async fn run(db: SqlitePool) {
-    let cfg = &config::get().app;
-    let (scan_tx, scan_rx) = mpsc::channel::<()>(1);
-    let (batch_tx, batch_rx) = mpsc::channel::<Vec<DirEntry>>(cfg.batch_queue_size);
-    let (index_tx, index_rx) = mpsc::channel::<ContentIndexable>(cfg.index_queue_size);
+    let (scan_tx, scan_rx) = mpsc::unbounded_channel::<()>();
+    let (batch_tx, batch_rx) = mpsc::unbounded_channel::<Vec<DirEntry>>();
+    let (index_tx, index_rx) = mpsc::unbounded_channel::<ContentIndexable>();
 
     let token = CancellationToken::new();
     let tracker = TaskTracker::new();
@@ -37,7 +36,7 @@ pub async fn run(db: SqlitePool) {
 
     tracker.close();
 
-    _ = scan_tx.send(()).await;
+    _ = scan_tx.send(());
 
     let (server, router) = api::server(db).await;
     let server_handle = server.handle();

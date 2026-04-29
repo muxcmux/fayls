@@ -22,8 +22,7 @@ pub struct App {
     pub tesseract_bin: String,
     pub pdftoppm_bin: String,
     pub batch_size: usize,
-    pub batch_queue_size: usize,
-    pub index_queue_size: usize,
+    pub max_concurrent_batches: usize,
     pub max_concurrent_indexers: usize,
     pub ignore_extensions: Vec<String>,
 }

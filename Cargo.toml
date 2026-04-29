@@ -7,7 +7,6 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1", features = ["macros", "signal", "fs", "process"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-bounded_join_set = "0.3"
 
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate"] }
 

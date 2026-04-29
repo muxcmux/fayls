@@ -66,7 +66,7 @@ async fn list_files_handler(
         StatusError::internal_server_error()
     })?;
 
-    res.render(list_entries(requested_path, &db).await);
+    res.render(list_entries(requested_path, db).await);
     Ok(())
 }
 

@@ -1,5 +1,7 @@
 use fayls::{app, config};
-use sqlx::{SqlitePool, sqlite::{SqliteConnectOptions, SqliteJournalMode}};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
+};
 
 #[tokio::main]
 async fn main() {
@@ -10,15 +12,20 @@ async fn main() {
     let opts = SqliteConnectOptions::new()
         .filename(&config::get().app.database)
         .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
         .create_if_missing(true);
 
-    let pool = SqlitePool::connect_with(opts).await.unwrap_or_else(|err| {
-        panic!(
-            "failed creating a pool for {}:\n{}",
-            &config::get().app.database.display(),
-            err
-        )
-    });
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .unwrap_or_else(|err| {
+            panic!(
+                "failed creating a pool for {}:\n{}",
+                &config::get().app.database.display(),
+                err
+            )
+        });
 
     sqlx::migrate!("./migrations")
         .run(&pool)

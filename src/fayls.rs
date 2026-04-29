@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::{
     collections::HashSet,
     path::{Path, PathBuf},
+    sync::Arc,
     time::UNIX_EPOCH,
 };
 use tokio_util::sync::CancellationToken;
@@ -11,7 +12,13 @@ use sqlx::{
     Decode, Encode, Executor, Sqlite, SqlitePool,
     sqlite::{SqliteArgumentValue, SqliteTypeInfo, SqliteValueRef},
 };
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::{
+    sync::{
+        Semaphore,
+        mpsc::{UnboundedReceiver, UnboundedSender},
+    },
+    task::JoinSet,
+};
 use walkdir::{DirEntry, WalkDir};
 
 use crate::config;
@@ -75,7 +82,7 @@ pub struct ExistingFayl {
     pub size: i64,
     pub last_modified: Option<i64>,
     pub checksum: Option<i64>,
-    pub indexed: i64,
+    pub processed: i64,
 }
 
 pub struct ContentIndexable(ExistingFayl);
@@ -105,14 +112,14 @@ impl ContentIndexable {
         .execute(&mut *txn)
         .await?;
 
-        self.0.mark_as_indexed(&mut *txn).await?;
+        self.0.mark_as_processed(&mut *txn).await?;
 
         txn.commit().await?;
         Ok(())
     }
 
-    pub(crate) async fn mark_as_indexed(&mut self, db: &SqlitePool) -> Result<(), sqlx::Error> {
-        self.0.mark_as_indexed(db).await
+    pub(crate) async fn mark_as_processed(&mut self, db: &SqlitePool) -> Result<(), sqlx::Error> {
+        self.0.mark_as_processed(db).await
     }
 }
 
@@ -136,7 +143,7 @@ impl NewFayl {
     {
         sqlx::query_as::<_, ExistingFayl>(
             r"
-            INSERT INTO fayls (name, parent, kind, size, checksum, last_modified, indexed)
+            INSERT INTO fayls (name, parent, kind, size, checksum, last_modified, processed)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             RETURNING *
             ",
@@ -197,18 +204,19 @@ impl ExistingFayl {
         Ok(())
     }
 
-    fn is_indexed(&self) -> bool {
-        self.indexed == 1
+    fn is_processed(&self) -> bool {
+        self.processed == 1
     }
 
-    async fn mark_as_indexed<'e, E>(&mut self, db: E) -> Result<(), sqlx::Error>
+    async fn mark_as_processed<'e, E>(&mut self, db: E) -> Result<(), sqlx::Error>
     where
         E: Executor<'e, Database = Sqlite>,
     {
-        *self = sqlx::query_as::<_, Self>("UPDATE fayls SET indexed = 1 WHERE id = ? RETURNING *")
-            .bind(self.id)
-            .fetch_one(db)
-            .await?;
+        *self =
+            sqlx::query_as::<_, Self>("UPDATE fayls SET processed = 1 WHERE id = ? RETURNING *")
+                .bind(self.id)
+                .fetch_one(db)
+                .await?;
 
         Ok(())
     }
@@ -289,8 +297,8 @@ fn dir_size(path: &Path) -> u64 {
 }
 
 pub async fn start_scanning(
-    mut rx: Receiver<()>,
-    tx: Sender<Vec<DirEntry>>,
+    mut rx: UnboundedReceiver<()>,
+    tx: UnboundedSender<Vec<DirEntry>>,
     token: CancellationToken,
 ) {
     while rx.recv().await.is_some() {
@@ -298,13 +306,13 @@ pub async fn start_scanning(
             break;
         }
 
-        scan(&tx, &token).await;
+        scan(&tx, &token);
     }
 
     tracing::info!("scanning stopped");
 }
 
-async fn scan(tx: &Sender<Vec<DirEntry>>, token: &CancellationToken) {
+fn scan(tx: &UnboundedSender<Vec<DirEntry>>, token: &CancellationToken) {
     let batch_size = config::get().app.batch_size;
 
     let paths: HashSet<PathBuf> = config::get()
@@ -335,7 +343,7 @@ async fn scan(tx: &Sender<Vec<DirEntry>>, token: &CancellationToken) {
                 Ok(entry) => {
                     batch.push(entry);
                     if batch.len() >= batch_size {
-                        _ = tx.send(std::mem::take(&mut batch)).await;
+                        _ = tx.send(std::mem::take(&mut batch));
                     }
                 }
                 Err(error) => tracing::warn!("failed to read directory entry: {error}"),
@@ -344,24 +352,35 @@ async fn scan(tx: &Sender<Vec<DirEntry>>, token: &CancellationToken) {
     }
 
     if !batch.is_empty() {
-        _ = tx.send(batch).await;
+        _ = tx.send(batch);
     }
 }
 
 pub(crate) async fn start_indexing(
     db: SqlitePool,
-    mut rx: Receiver<Vec<DirEntry>>,
-    tx: Sender<ContentIndexable>,
+    mut rx: UnboundedReceiver<Vec<DirEntry>>,
+    tx: UnboundedSender<ContentIndexable>,
     token: CancellationToken,
 ) {
+    let mut queue: JoinSet<()> = JoinSet::new();
+    let semaphore = Arc::new(Semaphore::new(config::get().app.max_concurrent_batches));
+
     while let Some(batch) = rx.recv().await {
         if token.is_cancelled() {
             break;
         }
 
-        if let Err(err) = index(batch, &db, &tx, &token).await {
-            tracing::error!("{err}");
-        }
+        let db = db.clone();
+        let tx = tx.clone();
+        let token = token.clone();
+        let sem = semaphore.clone();
+        queue.spawn(async move {
+            let permit = sem.acquire_owned().await.unwrap();
+            if let Err(err) = index(batch, db, tx, token).await {
+                tracing::error!("{err}");
+            }
+            drop(permit);
+        });
     }
 
     tracing::info!("batch indexing stopped");
@@ -369,9 +388,9 @@ pub(crate) async fn start_indexing(
 
 async fn index(
     entries: Vec<DirEntry>,
-    db: &SqlitePool,
-    tx: &Sender<ContentIndexable>,
-    token: &CancellationToken,
+    db: SqlitePool,
+    tx: UnboundedSender<ContentIndexable>,
+    token: CancellationToken,
 ) -> Result<()> {
     let mut txn = db.begin().await?;
     let mut indexables = Vec::with_capacity(entries.len());
@@ -392,14 +411,14 @@ async fn index(
                     .await?;
                 tracing::info!("reindexed: {}", &existing.path().display());
                 indexables.push(existing.into_content_indexable());
-            } else if !existing.is_indexed() {
+            } else if !existing.is_processed() {
                 tracing::info!("reindexed: {}", &existing.path().display());
                 indexables.push(existing.into_content_indexable());
             }
         } else {
             let existing = new.insert(&mut *txn).await?;
             tracing::info!("indexed: {}", &existing.path().display());
-            if !existing.is_indexed() {
+            if !existing.is_processed() {
                 indexables.push(existing.into_content_indexable());
             }
         }
@@ -412,7 +431,7 @@ async fn index(
             break;
         }
 
-        tx.send(item).await?;
+        tx.send(item)?;
     }
 
     Ok(())

@@ -70,13 +70,97 @@ async fn list_files_handler(
     Ok(())
 }
 
+async fn search(query: &str, db: &SqlitePool) -> Json<Vec<ExistingFayl>> {
+    let items = sqlx::query_as::<_, ExistingFayl>(
+        r"
+        -- :q_like   -> pattern for file names (e.g. '%report%')
+        -- :q_match  -> FTS5 query (e.g. 'sqlite NEAR/5 search')
+
+        WITH
+        -- 1) Name matches from fayls
+        name_hits AS (
+            SELECT
+                f.id,
+                f.name,
+                f.parent,
+                f.kind,
+                f.size,
+                f.checksum,
+                f.last_modified,
+                f.processed,
+                1 AS result_group,          -- ensures these come first
+                NULL AS rank
+            FROM fayls AS f
+            WHERE f.name LIKE '%' || ?1 || '%'
+        ),
+
+        -- 2) Full-text matches from content_index
+        fts_hits AS (
+            SELECT
+                f.id,
+                f.name,
+                f.parent,
+                f.kind,
+                f.size,
+                f.checksum,
+                f.last_modified,
+                f.processed,
+                2 AS result_group,          -- after LIKE results
+                bm25(content_index, 10.0, 5.0) AS rank
+            FROM content_index
+            JOIN fayls AS f
+              ON f.id = content_index.rowid   -- or content_index.id if stored explicitly
+            WHERE content_index MATCH ?1
+        )
+
+        -- 3) Combine both sets
+        SELECT *
+        FROM (
+            SELECT * FROM name_hits
+            UNION ALL
+            SELECT * FROM fts_hits
+        )
+        ORDER BY
+            result_group ASC,                 -- LIKE first, MATCH second
+            rank ASC;                         -- bm25: lower is better
+    ",
+    )
+    .bind(query)
+    .fetch_all(db)
+    .await
+    .unwrap();
+
+    Json(items)
+}
+
+#[handler]
+async fn search_handler(
+    req: &mut Request,
+    depot: &mut Depot,
+    res: &mut Response,
+) -> Result<(), StatusError> {
+    let query = req
+        .query::<&str>("q")
+        .ok_or_else(StatusError::bad_request)?;
+
+    let db = depot.obtain::<SqlitePool>().map_err(|_| {
+        tracing::error!("can't get db");
+        StatusError::internal_server_error()
+    })?;
+
+    res.render(search(query, db).await);
+
+    Ok(())
+}
+
 pub async fn server(db: SqlitePool) -> (Server<TcpAcceptor>, Router) {
     let acceptor = TcpListener::new(config::get().server.addr()).bind().await;
 
     let router = Router::new()
         .hoop(affix_state::inject(db))
         .hoop(force_json_format)
-        .get(list_files_handler);
+        .get(list_files_handler)
+        .push(Router::with_path("search").get(search_handler));
 
     let server = Server::new(acceptor);
     (server, router)

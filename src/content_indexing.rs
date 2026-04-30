@@ -7,7 +7,10 @@ use std::{
 };
 use tokio::{
     process::Command,
-    sync::{Semaphore, mpsc::UnboundedReceiver},
+    sync::{
+        Semaphore,
+        mpsc::{UnboundedReceiver, UnboundedSender},
+    },
     task::JoinSet,
 };
 use tokio_util::sync::CancellationToken;
@@ -88,16 +91,14 @@ async fn extract_pdf_content(file_path: &Path) -> Result<String> {
     Ok(content)
 }
 
-async fn extract_content_from_file(file_path: &Path) -> Result<Option<String>> {
+async fn extract_content_from_file(file_path: &Path) -> Result<String> {
     match file_path.extension().into() {
-        IndexableFileType::Pdf => Ok(Some(extract_pdf_content(file_path).await?)),
-        IndexableFileType::Image => Ok(Some(extract_image_content(file_path).await?)),
-        IndexableFileType::Ignored => Ok(None),
-        _ => Ok(Some(
-            tokio::fs::read_to_string(&file_path)
-                .await
-                .map_err(|e| anyhow::anyhow!(e))?,
-        )),
+        IndexableFileType::Pdf => Ok(extract_pdf_content(file_path).await?),
+        IndexableFileType::Image => Ok(extract_image_content(file_path).await?),
+        IndexableFileType::Ignored => Ok(String::new()),
+        _ => Ok(tokio::fs::read_to_string(&file_path)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?),
     }
 }
 
@@ -114,7 +115,7 @@ impl From<Option<&OsStr>> for IndexableFileType {
         match value.and_then(OsStr::to_str).map(str::to_ascii_lowercase) {
             None => Self::Unknown,
             Some(s) => {
-                if config::get().app.ignore_extensions.contains(&s) {
+                if config::get().indexing.ignore_extensions.contains(&s) {
                     return Self::Ignored;
                 }
 
@@ -128,11 +129,12 @@ impl From<Option<&OsStr>> for IndexableFileType {
     }
 }
 
-async fn index(mut indexable: ContentIndexable, db: SqlitePool) -> Result<()> {
-    match extract_content_from_file(indexable.fayl().path().as_ref()).await {
-        Ok(Some(content)) => indexable.index_content(&db, &content).await?,
-        _ => indexable.mark_as_processed(&db).await?,
-    }
+async fn index(indexable: &mut ContentIndexable, db: SqlitePool) -> Result<()> {
+    let content = extract_content_from_file(indexable.fayl().path().as_ref())
+        .await
+        .unwrap_or(String::new());
+
+    indexable.index_content(&db, &content).await?;
 
     tracing::info!("indexed {}", indexable.fayl().path().display());
 
@@ -141,23 +143,33 @@ async fn index(mut indexable: ContentIndexable, db: SqlitePool) -> Result<()> {
 
 pub(crate) async fn start_indexing(
     db: SqlitePool,
-    mut rx: UnboundedReceiver<ContentIndexable>,
+    mut rx: UnboundedReceiver<(ContentIndexable, usize)>,
+    tx: UnboundedSender<(ContentIndexable, usize)>,
     token: CancellationToken,
 ) {
     let mut queue: JoinSet<()> = JoinSet::new();
-    let semaphore = Arc::new(Semaphore::new(config::get().app.max_concurrent_indexers));
+    let semaphore = Arc::new(Semaphore::new(
+        config::get().indexing.max_concurrent_indexers,
+    ));
 
-    while let Some(indexable) = rx.recv().await {
+    while let Some((mut indexable, retry)) = rx.recv().await {
         if token.is_cancelled() {
             tracing::info!("breaking content indexing recv loop");
             break;
         }
 
         let db = db.clone();
+        let tx = tx.clone();
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         queue.spawn(async move {
-            if let Err(err) = index(indexable, db).await {
-                tracing::error!("{err}");
+            if let Err(err) = index(&mut indexable, db).await {
+                if retry > config::get().indexing.max_retries {
+                    tracing::error!("content indexing failed: {err}, giving up");
+                } else {
+                    let retry = retry + 1;
+                    tracing::error!("content indexing failed: {err}, retrying ({retry})");
+                    _ = tx.send((indexable, retry));
+                }
             }
             drop(permit);
         });

@@ -17,7 +17,7 @@ async fn list_entries(path: &Path, db: &SqlitePool) -> Json<Vec<ExistingFayl>> {
         WHERE parent = ?
         ORDER BY
             CASE WHEN kind = 'directory' THEN 0 ELSE 1 END,
-            name
+            last_modified
     ",
     )
     .bind(path.to_string_lossy().as_ref())
@@ -70,61 +70,62 @@ async fn list_files_handler(
     Ok(())
 }
 
-async fn search(query: &str, db: &SqlitePool) -> Json<Vec<ExistingFayl>> {
-    let items = sqlx::query_as::<_, ExistingFayl>(
-        r"
-        -- :q_like   -> pattern for file names (e.g. '%report%')
-        -- :q_match  -> FTS5 query (e.g. 'sqlite NEAR/5 search')
+const FILENAME_QUERY: &str = "SELECT * FROM fayls WHERE name LIKE '%' || ? || '%'";
 
-        WITH
-        -- 1) Name matches from fayls
-        name_hits AS (
-            SELECT
-                f.id,
-                f.name,
-                f.parent,
-                f.kind,
-                f.size,
-                f.checksum,
-                f.last_modified,
-                f.processed,
-                1 AS result_group,          -- ensures these come first
-                NULL AS rank
-            FROM fayls AS f
-            WHERE f.name LIKE '%' || ?1 || '%'
-        ),
+const FTS_QUERY: &str = r"
+    WITH
+    name_hits AS (
+        SELECT
+            f.*,
+            1 AS result_group,
+            NULL AS rank
+        FROM fayls AS f
+        WHERE f.name LIKE '%' || ?1 || '%'
+    ),
 
-        -- 2) Full-text matches from content_index
-        fts_hits AS (
-            SELECT
-                f.id,
-                f.name,
-                f.parent,
-                f.kind,
-                f.size,
-                f.checksum,
-                f.last_modified,
-                f.processed,
-                2 AS result_group,          -- after LIKE results
-                bm25(content_index, 10.0, 5.0) AS rank
-            FROM content_index
-            JOIN fayls AS f
-              ON f.id = content_index.rowid   -- or content_index.id if stored explicitly
-            WHERE content_index MATCH ?1
-        )
-
-        -- 3) Combine both sets
-        SELECT *
-        FROM (
-            SELECT * FROM name_hits
-            UNION ALL
-            SELECT * FROM fts_hits
-        )
-        ORDER BY
-            result_group ASC,                 -- LIKE first, MATCH second
-            rank ASC;                         -- bm25: lower is better
-    ",
+    fts_hits AS (
+        SELECT
+            f.*,
+            2 AS result_group,
+            bm25(content_index, 10.0, 5.0) AS rank
+        FROM content_index
+        JOIN fayls AS f
+          ON f.id = content_index.rowid
+        WHERE content_index MATCH ?1
+          AND f.id NOT IN (SELECT id FROM name_hits)
     )
+
+    SELECT *
+    FROM (
+        SELECT * FROM name_hits
+        UNION ALL
+        SELECT * FROM fts_hits
+    )
+    ORDER BY
+        result_group ASC,
+        rank ASC
+";
+
+async fn is_valid_fts(query: &str, db: &SqlitePool) -> bool {
+    match sqlx::query("SELECT content FROM fts_query_validator WHERE content MATCH ?")
+        .bind(query)
+        .fetch_optional(db)
+        .await
+    {
+        Ok(_) => true,
+        Err(e) => {
+            tracing::warn!("bad fts query: {e}");
+            false
+        }
+    }
+}
+
+async fn search(query: &str, db: &SqlitePool) -> Json<Vec<ExistingFayl>> {
+    let items = sqlx::query_as::<_, ExistingFayl>(if is_valid_fts(query, db).await {
+        FTS_QUERY
+    } else {
+        FILENAME_QUERY
+    })
     .bind(query)
     .fetch_all(db)
     .await

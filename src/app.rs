@@ -13,8 +13,8 @@ use walkdir::DirEntry;
 
 pub async fn run(db: SqlitePool) {
     let (scan_tx, scan_rx) = mpsc::unbounded_channel::<()>();
-    let (batch_tx, batch_rx) = mpsc::unbounded_channel::<Vec<DirEntry>>();
-    let (index_tx, index_rx) = mpsc::unbounded_channel::<ContentIndexable>();
+    let (batch_tx, batch_rx) = mpsc::unbounded_channel::<(Vec<DirEntry>, usize)>();
+    let (index_tx, index_rx) = mpsc::unbounded_channel::<(ContentIndexable, usize)>();
 
     let token = CancellationToken::new();
     let tracker = TaskTracker::new();
@@ -22,12 +22,14 @@ pub async fn run(db: SqlitePool) {
     tracker.spawn(content_indexing::start_indexing(
         db.clone(),
         index_rx,
+        index_tx.clone(),
         token.clone(),
     ));
 
-    tracker.spawn(fayls::start_indexing(
+    tracker.spawn(fayls::start_indexing_batches(
         db.clone(),
         batch_rx,
+        batch_tx.clone(),
         index_tx,
         token.clone(),
     ));

@@ -2,12 +2,18 @@ use std::time::Duration;
 
 use fayls::{app, config};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().init();
-
     config::load().unwrap_or_else(|err| panic!("could not load config:\n{err}"));
+
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or(EnvFilter::new(&config::get().app.log_level)),
+        )
+        .init();
 
     let opts = SqliteConnectOptions::new()
         .filename(&config::get().database.path)

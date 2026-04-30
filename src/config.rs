@@ -22,14 +22,20 @@ pub struct Database {
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct App {
-    pub sources: Vec<PathBuf>,
-    pub tesseract_bin: String,
-    pub pdftoppm_bin: String,
+pub struct Indexing {
     pub batch_size: usize,
     pub max_concurrent_batches: usize,
     pub max_concurrent_indexers: usize,
     pub ignore_extensions: Vec<String>,
+    pub max_retries: usize,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct App {
+    pub sources: Vec<PathBuf>,
+    pub log_level: String,
+    pub tesseract_bin: String,
+    pub pdftoppm_bin: String,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -37,6 +43,7 @@ pub struct Config {
     pub server: Server,
     pub database: Database,
     pub app: App,
+    pub indexing: Indexing,
 }
 
 enum DefaultConfigFile {

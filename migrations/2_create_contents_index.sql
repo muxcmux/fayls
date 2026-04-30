@@ -6,6 +6,14 @@ CREATE VIRTUAL TABLE "content_index" USING fts5(
   detail=full
 );
 
+CREATE VIRTUAL TABLE "fts_query_validator" USING fts5(
+  name,
+  content,
+  content="",
+  tokenize="trigram",
+  detail=full
+);
+
 -- this is a test query
 -- SELECT f.*, bm25(content_index, 2.0, 1.0) AS score
 -- FROM content_index

@@ -117,10 +117,6 @@ impl ContentIndexable {
         txn.commit().await?;
         Ok(())
     }
-
-    pub(crate) async fn mark_as_processed(&mut self, db: &SqlitePool) -> Result<(), sqlx::Error> {
-        self.0.mark_as_processed(db).await
-    }
 }
 
 impl NewFayl {
@@ -233,8 +229,8 @@ impl ExistingFayl {
     }
 }
 
-impl From<DirEntry> for NewFayl {
-    fn from(entry: DirEntry) -> Self {
+impl From<&DirEntry> for NewFayl {
+    fn from(entry: &DirEntry) -> Self {
         let metadata = entry.metadata().ok();
         let kind = if entry.file_type().is_dir() {
             FaylKind::Directory
@@ -305,7 +301,7 @@ fn dir_size(path: &Path) -> u64 {
 
 pub async fn start_scanning(
     mut rx: UnboundedReceiver<()>,
-    tx: UnboundedSender<Vec<DirEntry>>,
+    tx: UnboundedSender<(Vec<DirEntry>, usize)>,
     token: CancellationToken,
 ) {
     while rx.recv().await.is_some() {
@@ -319,8 +315,8 @@ pub async fn start_scanning(
     tracing::info!("scanning stopped");
 }
 
-fn scan(tx: &UnboundedSender<Vec<DirEntry>>, token: &CancellationToken) {
-    let batch_size = config::get().app.batch_size;
+fn scan(tx: &UnboundedSender<(Vec<DirEntry>, usize)>, token: &CancellationToken) {
+    let batch_size = config::get().indexing.batch_size;
 
     let paths: HashSet<PathBuf> = config::get()
         .app
@@ -350,7 +346,7 @@ fn scan(tx: &UnboundedSender<Vec<DirEntry>>, token: &CancellationToken) {
                 Ok(entry) => {
                     batch.push(entry);
                     if batch.len() >= batch_size {
-                        _ = tx.send(std::mem::take(&mut batch));
+                        _ = tx.send((std::mem::take(&mut batch), 0));
                     }
                 }
                 Err(error) => tracing::warn!("failed to read directory entry: {error}"),
@@ -359,32 +355,42 @@ fn scan(tx: &UnboundedSender<Vec<DirEntry>>, token: &CancellationToken) {
     }
 
     if !batch.is_empty() {
-        _ = tx.send(batch);
+        _ = tx.send((batch, 0));
     }
 }
 
-pub(crate) async fn start_indexing(
+pub(crate) async fn start_indexing_batches(
     db: SqlitePool,
-    mut rx: UnboundedReceiver<Vec<DirEntry>>,
-    tx: UnboundedSender<ContentIndexable>,
+    mut batch_rx: UnboundedReceiver<(Vec<DirEntry>, usize)>,
+    batch_tx: UnboundedSender<(Vec<DirEntry>, usize)>,
+    index_tx: UnboundedSender<(ContentIndexable, usize)>,
     token: CancellationToken,
 ) {
     let mut queue: JoinSet<()> = JoinSet::new();
-    let semaphore = Arc::new(Semaphore::new(config::get().app.max_concurrent_batches));
+    let semaphore = Arc::new(Semaphore::new(
+        config::get().indexing.max_concurrent_batches,
+    ));
 
-    while let Some(batch) = rx.recv().await {
+    while let Some((batch, retry)) = batch_rx.recv().await {
         if token.is_cancelled() {
             tracing::info!("breaking indexing recv loop");
             break;
         }
 
         let db = db.clone();
-        let tx = tx.clone();
+        let index_tx = index_tx.clone();
+        let batch_tx = batch_tx.clone();
         let token = token.clone();
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         queue.spawn(async move {
-            if let Err(err) = index(batch, db, tx, token).await {
-                tracing::error!("batch error: {err}");
+            if let Err(err) = index(&batch, db, index_tx, token).await {
+                if retry > config::get().indexing.max_retries {
+                    tracing::error!("batch error: {err}, giving up");
+                } else {
+                    let retry = retry + 1;
+                    tracing::error!("batch error: {err}, retrying ({retry})");
+                    _ = batch_tx.send((batch, retry));
+                }
             }
             drop(permit);
         });
@@ -394,9 +400,9 @@ pub(crate) async fn start_indexing(
 }
 
 async fn index(
-    entries: Vec<DirEntry>,
+    entries: &Vec<DirEntry>,
     db: SqlitePool,
-    tx: UnboundedSender<ContentIndexable>,
+    tx: UnboundedSender<(ContentIndexable, usize)>,
     token: CancellationToken,
 ) -> Result<()> {
     let mut to_reindex = Vec::with_capacity(entries.len());
@@ -455,7 +461,7 @@ async fn index(
             break;
         }
 
-        tx.send(item)?;
+        tx.send((item, 0))?;
     }
 
     Ok(())

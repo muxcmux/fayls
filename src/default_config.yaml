@@ -1,15 +1,18 @@
+app:
+  pdftoppm_bin: pdftoppm
+  tesseract_bin: tesseract
+  log_level: info
 server:
   address: 127.0.0.1
   port: 8080
 database:
   path: data/fayls.db
   max_connections: 2
-app:
-  pdftoppm_bin: pdftoppm
-  tesseract_bin: tesseract
+indexing:
   batch_size: 1000
   max_concurrent_batches: 10
   max_concurrent_indexers: 12
+  max_retries: 5
   ignore_extensions:
     - zip
     - gz

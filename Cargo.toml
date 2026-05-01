@@ -11,9 +11,10 @@ tokio-util = { version = "0.7", features = ["rt"] }
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate"] }
 
 anyhow = "1"
+thiserror = "2"
 tempfile = "3"
 
-salvo ={ version = "0.92", features = ["affix-state"] }
+salvo ={ version = "0.93", features = ["affix-state"] }
 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

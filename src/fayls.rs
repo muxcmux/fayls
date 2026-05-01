@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow};
 use std::{
-    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
     time::UNIX_EPOCH,
@@ -318,26 +317,11 @@ pub async fn start_scanning(
 fn scan(tx: &UnboundedSender<(Vec<DirEntry>, usize)>, token: &CancellationToken) {
     let batch_size = config::get().indexing.batch_size;
 
-    let paths: HashSet<PathBuf> = config::get()
-        .app
-        .sources
-        .iter()
-        .filter_map(|p| {
-            p.canonicalize()
-                .map_err(|err| {
-                    tracing::warn!(
-                        "failed to canonicalize path for source {} ({})",
-                        p.display(),
-                        err
-                    );
-                })
-                .ok()
-        })
-        .collect();
+    let paths = config::get().app.canonicalized_sources();
     let mut batch = Vec::with_capacity(batch_size);
 
     for path in paths {
-        for entry in WalkDir::new(path).min_depth(1) {
+        for entry in WalkDir::new(path).min_depth(0) {
             if token.is_cancelled() {
                 return;
             }

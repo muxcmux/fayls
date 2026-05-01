@@ -1,6 +1,6 @@
 use config::{Environment, File, FileFormat};
 use serde::Deserialize;
-use std::{env::args, path::PathBuf, sync::OnceLock};
+use std::{collections::HashSet, env::args, path::PathBuf, sync::OnceLock};
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct Server {
@@ -36,6 +36,25 @@ pub struct App {
     pub log_level: String,
     pub tesseract_bin: String,
     pub pdftoppm_bin: String,
+}
+
+impl App {
+    pub fn canonicalized_sources(&self) -> HashSet<PathBuf> {
+        self.sources
+        .iter()
+        .filter_map(|p| {
+            p.canonicalize()
+                .map_err(|err| {
+                    tracing::warn!(
+                        "failed to canonicalize path for source {} ({})",
+                        p.display(),
+                        err
+                    );
+                })
+                .ok()
+        })
+        .collect()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]

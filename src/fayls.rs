@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 
 use crc_fast::checksum_file;
 use sqlx::{
-    Decode, Encode, Executor, Sqlite, SqlitePool,
+    Decode, Encode, Executor, Sqlite,
     sqlite::{SqliteArgumentValue, SqliteTypeInfo, SqliteValueRef},
 };
 use tokio::{
@@ -20,7 +20,7 @@ use tokio::{
 };
 use walkdir::{DirEntry, WalkDir};
 
-use crate::config;
+use crate::{app, config};
 
 #[derive(Clone, serde::Serialize, PartialEq)]
 pub enum FaylKind {
@@ -92,12 +92,8 @@ impl ContentIndexable {
         &self.0
     }
 
-    pub(crate) async fn index_content(
-        &mut self,
-        db: &SqlitePool,
-        content: &str,
-    ) -> Result<(), sqlx::Error> {
-        let mut txn = db.begin().await?;
+    pub(crate) async fn index_content(&mut self, content: &str) -> Result<(), sqlx::Error> {
+        let mut txn = app::db().begin().await?;
 
         sqlx::query(
             r"
@@ -344,7 +340,6 @@ fn scan(tx: &UnboundedSender<(Vec<DirEntry>, usize)>, token: &CancellationToken)
 }
 
 pub(crate) async fn start_indexing_batches(
-    db: SqlitePool,
     mut batch_rx: UnboundedReceiver<(Vec<DirEntry>, usize)>,
     batch_tx: UnboundedSender<(Vec<DirEntry>, usize)>,
     index_tx: UnboundedSender<(ContentIndexable, usize)>,
@@ -361,13 +356,12 @@ pub(crate) async fn start_indexing_batches(
             break;
         }
 
-        let db = db.clone();
         let index_tx = index_tx.clone();
         let batch_tx = batch_tx.clone();
         let token = token.clone();
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         queue.spawn(async move {
-            if let Err(err) = index(&batch, db, index_tx, token).await {
+            if let Err(err) = index(&batch, index_tx, token).await {
                 if retry > config::get().indexing.max_retries {
                     tracing::error!("batch error: {err}, giving up");
                 } else {
@@ -385,7 +379,6 @@ pub(crate) async fn start_indexing_batches(
 
 async fn index(
     entries: &Vec<DirEntry>,
-    db: SqlitePool,
     tx: UnboundedSender<(ContentIndexable, usize)>,
     token: CancellationToken,
 ) -> Result<()> {
@@ -401,7 +394,7 @@ async fn index(
         let new = NewFayl::from(entry);
 
         let existing = new
-            .find_existing(&db)
+            .find_existing(app::db())
             .await
             .map_err(|_| anyhow!("find existing failed"))?;
 
@@ -419,7 +412,7 @@ async fn index(
         }
     }
 
-    let mut txn = db.begin().await.map_err(|_| anyhow!("txn failed"))?;
+    let mut txn = app::db().begin().await.map_err(|_| anyhow!("txn failed"))?;
     for new in to_insert {
         let existing = new
             .insert(&mut *txn)

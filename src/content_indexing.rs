@@ -1,5 +1,4 @@
 use anyhow::{Result, bail};
-use sqlx::SqlitePool;
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
@@ -129,12 +128,12 @@ impl From<Option<&OsStr>> for IndexableFileType {
     }
 }
 
-async fn index(indexable: &mut ContentIndexable, db: SqlitePool) -> Result<()> {
+async fn index(indexable: &mut ContentIndexable) -> Result<()> {
     let content = extract_content_from_file(indexable.fayl().path().as_ref())
         .await
         .unwrap_or(String::new());
 
-    indexable.index_content(&db, &content).await?;
+    indexable.index_content(&content).await?;
 
     tracing::info!("indexed {}", indexable.fayl().path().display());
 
@@ -142,7 +141,6 @@ async fn index(indexable: &mut ContentIndexable, db: SqlitePool) -> Result<()> {
 }
 
 pub(crate) async fn start_indexing(
-    db: SqlitePool,
     mut rx: UnboundedReceiver<(ContentIndexable, usize)>,
     tx: UnboundedSender<(ContentIndexable, usize)>,
     token: CancellationToken,
@@ -158,11 +156,10 @@ pub(crate) async fn start_indexing(
             break;
         }
 
-        let db = db.clone();
         let tx = tx.clone();
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         queue.spawn(async move {
-            if let Err(err) = index(&mut indexable, db).await {
+            if let Err(err) = index(&mut indexable).await {
                 if retry > config::get().indexing.max_retries {
                     tracing::error!("content indexing failed: {err}, giving up");
                 } else {

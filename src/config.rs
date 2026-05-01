@@ -39,21 +39,22 @@ pub struct App {
 }
 
 impl App {
+    #[must_use]
     pub fn canonicalized_sources(&self) -> HashSet<PathBuf> {
         self.sources
-        .iter()
-        .filter_map(|p| {
-            p.canonicalize()
-                .map_err(|err| {
-                    tracing::warn!(
-                        "failed to canonicalize path for source {} ({})",
-                        p.display(),
-                        err
-                    );
-                })
-                .ok()
-        })
-        .collect()
+            .iter()
+            .filter_map(|p| {
+                p.canonicalize()
+                    .map_err(|err| {
+                        tracing::warn!(
+                            "failed to canonicalize path for source {} ({})",
+                            p.display(),
+                            err
+                        );
+                    })
+                    .ok()
+            })
+            .collect()
     }
 }
 

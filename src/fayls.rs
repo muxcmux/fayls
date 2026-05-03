@@ -29,6 +29,16 @@ pub enum FaylKind {
     Directory,
 }
 
+impl FaylKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            FaylKind::File => "file",
+            FaylKind::Symlink => "symlink",
+            FaylKind::Directory => "directory",
+        }
+    }
+}
+
 impl sqlx::Type<Sqlite> for FaylKind {
     fn type_info() -> SqliteTypeInfo {
         <String as sqlx::Type<Sqlite>>::type_info()
@@ -53,13 +63,7 @@ impl<'q> Encode<'q, Sqlite> for FaylKind {
         &self,
         buf: &mut Vec<SqliteArgumentValue<'q>>,
     ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
-        let s = match self {
-            FaylKind::File => "file",
-            FaylKind::Symlink => "symlink",
-            FaylKind::Directory => "directory",
-        };
-
-        <&str as Encode<Sqlite>>::encode(s, buf)
+        <&str as Encode<Sqlite>>::encode(self.as_str(), buf)
     }
 }
 

@@ -2,8 +2,9 @@ use crate::config;
 use std::{sync::OnceLock, time::Duration};
 
 use crate::{
-    api, content_indexing,
+    content_indexing,
     fayls::{self, ContentIndexable},
+    web,
 };
 use sqlx::{
     SqlitePool,
@@ -81,7 +82,7 @@ pub async fn run() {
 
     _ = scan_tx.send(());
 
-    let (server, router) = api::server().await;
+    let (server, router) = web::server().await;
     let server_handle = server.handle();
 
     tokio::spawn(async move {

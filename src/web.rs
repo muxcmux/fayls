@@ -1,13 +1,10 @@
+mod views;
+
 use crate::{
     app,
     error::{Error, Result},
 };
-use salvo::{
-    conn::tcp::TcpAcceptor,
-    http::{HeaderValue, header},
-    prelude::*,
-    writing::Json,
-};
+use salvo::{conn::tcp::TcpAcceptor, fs::NamedFile, prelude::*};
 
 use crate::{
     config,
@@ -31,28 +28,14 @@ async fn list_entries(paths: Vec<Option<String>>) -> Result<Vec<ExistingFayl>> {
 }
 
 #[handler]
-async fn force_json_format(
-    req: &mut Request,
-    depot: &mut Depot,
-    res: &mut Response,
-    ctrl: &mut FlowCtrl,
-) {
-    req.headers_mut()
-        .insert(header::ACCEPT, HeaderValue::from_static("application/json"));
-
-    ctrl.call_next(req, depot, res).await;
-
-    res.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/json; charset=utf-8"),
-    );
-}
-
-#[handler]
 async fn list_files_handler(req: &mut Request, res: &mut Response) -> Result {
-    let path = req.param::<String>("path");
+    let path = req.param::<&str>("path").map(|p| format!("/{p}"));
 
-    res.render(Json(list_entries(vec![path]).await?));
+    let items = list_entries(vec![path]).await?;
+
+    res.render(Text::Html(
+        views::layout("Fayls", &views::file_list(&items)).into_string(),
+    ));
 
     Ok(())
 }
@@ -66,7 +49,11 @@ async fn list_roots_handler(res: &mut Response) -> Result {
         .map(|s| s.parent().map(|p| p.to_string_lossy().to_string()))
         .collect();
 
-    res.render(Json(list_entries(roots).await?));
+    let items = list_entries(roots).await?;
+
+    res.render(Text::Html(
+        views::layout("Fayls", &views::file_list(&items)).into_string(),
+    ));
 
     Ok(())
 }
@@ -137,7 +124,18 @@ async fn search_handler(req: &mut Request, res: &mut Response) -> Result {
     .fetch_all(app::db())
     .await?;
 
-    res.render(Json(items));
+    res.render(Text::Html(
+        views::layout(&format!("Searching fo {query}"), &views::file_list(&items)).into_string(),
+    ));
+
+    Ok(())
+}
+
+#[handler]
+async fn serve_static_file(req: &mut Request, res: &mut Response) -> Result {
+    let file = req.param::<&str>("file").ok_or(Error::NotFound)?;
+
+    NamedFile::builder(file).send(req.headers(), res).await;
 
     Ok(())
 }
@@ -145,22 +143,22 @@ async fn search_handler(req: &mut Request, res: &mut Response) -> Result {
 pub async fn server() -> (Server<TcpAcceptor>, Router) {
     let acceptor = TcpListener::new(config::get().server.addr()).bind().await;
 
-    let router = Router::with_path("api")
-        .hoop(force_json_format)
+    let router = Router::new()
         .hoop(
             Compression::new()
                 .enable_brotli(CompressionLevel::Default)
-                .enable_gzip(CompressionLevel::Default)
-                .enable_deflate(CompressionLevel::Default)
-                .enable_zstd(CompressionLevel::Default),
+                .enable_gzip(CompressionLevel::Default),
         )
         .hoop(CachingHeaders::new())
+        .get(list_roots_handler)
         .push(
             Router::with_path("files")
                 .get(list_roots_handler)
-                .push(Router::new().path("{path}").get(list_files_handler)),
+                .push(Router::with_path("{*path}").get(list_files_handler)),
         )
-        .push(Router::with_path("search").get(search_handler));
+        .push(Router::with_path("search").get(search_handler))
+        // always needs to be last
+        .push(Router::with_path("{*file}").get(serve_static_file));
 
     let server = Server::new(acceptor);
     (server, router)

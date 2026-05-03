@@ -17,8 +17,7 @@ where
     q
 }
 
-#[must_use]
-pub fn expand_vec_placeholder(q: &str, len: usize) -> String {
+pub(crate) fn expand_vec_placeholder(q: &str, len: usize) -> String {
     let mut r = String::from("(");
     for _ in 1..len {
         r.push_str("?, ");

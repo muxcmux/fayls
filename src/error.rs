@@ -36,8 +36,6 @@ pub enum Error {
     /// which is then converted into this enum variant
     #[error("An internal server error occured")]
     Anyhow(#[from] anyhow::Error),
-    // #[error("{}", .0)]
-    // Json(#[from] serde_json::Error),
     #[error("{}", .0)]
     BadRequest(&'static str),
 }
@@ -49,9 +47,8 @@ impl Error {
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::UnprocessableEntity(_) => StatusCode::UNPROCESSABLE_ENTITY,
-            Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
-            // Self::Json(_) => StatusCode::BAD_REQUEST,
+            Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Sqlx(e) => match e {
                 sqlx::Error::RowNotFound => StatusCode::NOT_FOUND,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,

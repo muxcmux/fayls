@@ -18,7 +18,7 @@
   }
 
   .size,
-  .date,
+  .last_modified,
   .icon {
     white-space: nowrap;
     width: 1%;
@@ -41,6 +41,44 @@
     svg {
       width: 24px;
       height: 24px;
+    }
+  }
+
+  th {
+    position: relative;
+    padding-left: 2rem;
+
+    &:hover {
+      --pico-background-color: color-mix(in srgb, var(--pico-text-selection-color), transparent 70%);
+    }
+
+    svg {
+      width: 30px;
+      height: 30px;
+      position: absolute;
+      top: 50%;
+      left: 0;
+      transform: translateY(-50%);
+
+      path {
+        opacity: 0.15;
+      }
+    }
+  }
+
+  th.asc {
+    svg {
+      path.asc {
+        opacity: 1;
+      }
+    }
+  }
+
+  th.desc {
+    svg {
+      path.desc {
+        opacity: 1;
+      }
     }
   }
 

@@ -11,6 +11,11 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 salvo ={ version = "0.93", features = ["affix-state", "caching-headers", "compression"] }
+# need these because salvo doesn't re-export them
+# and so you can't pass queries around in functions
+# or build query strings fffs
+form_urlencoded = "1.2"
+multimap = "0.10"
 
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate"] }
 

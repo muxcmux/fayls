@@ -1,6 +1,7 @@
 use std::{collections::HashMap, sync::LazyLock};
 
 use maud::{Markup, html};
+use multimap::MultiMap;
 use sqlx::{Database, Encode, FromRow, IntoArguments, Type, query::QueryAs};
 
 use crate::fayls::{ExistingFayl, FaylKind};
@@ -113,4 +114,18 @@ pub fn format_size(bytes: i64) -> String {
     let value = format!("{value:.1}");
     let value = value.trim_end_matches(".0");
     [value, BYTE_UNITS[i]].join(" ")
+}
+
+pub fn queries_to_string(queries: &MultiMap<String, String>) -> String {
+    if queries.is_empty() {
+        return String::new();
+    }
+
+    let mut ser = form_urlencoded::Serializer::new(String::new());
+    for (k, values) in queries.iter_all() {
+        for v in values {
+            ser.append_pair(k, v);
+        }
+    }
+    format!("?{}", ser.finish())
 }

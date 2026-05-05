@@ -1,6 +1,6 @@
 use maud::{DOCTYPE, Markup, html};
 
-use crate::fayls::{ExistingFayl, FaylKind};
+use crate::{fayls::ExistingFayl, utils};
 
 pub fn layout(title: &str, content: &Markup) -> Markup {
     html! {
@@ -11,7 +11,8 @@ pub fn layout(title: &str, content: &Markup) -> Markup {
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.fluid.classless.min.css";
                 link rel="stylesheet" href="/static/app.css";
-                script src="https://cdn.jsdelivr.net/npm/htmx.org@4.0.0-beta2" integrity="sha384-v+EMKtNUAo5enmQxBqgoU/FWvVvvZHvITNzurHSl4kzvCs94wdlgHUci1lliKWKz" crossorigin="anonymous" {}
+                script defer src="https://cdn.jsdelivr.net/npm/htmx.org@4.0.0-beta2" integrity="sha384-v+EMKtNUAo5enmQxBqgoU/FWvVvvZHvITNzurHSl4kzvCs94wdlgHUci1lliKWKz" crossorigin="anonymous" {}
+                script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" {}
                 script src="/static/app.js" {}
 
                 title { (title) }
@@ -28,31 +29,28 @@ pub fn layout(title: &str, content: &Markup) -> Markup {
     }
 }
 
-pub fn file_list(files: &Vec<ExistingFayl>) -> Markup {
+pub fn file_list(files: &[ExistingFayl]) -> Markup {
     html! {
-        table.file_list {
-            thead {
-                tr {
-                    th { "Name" }
-                    th { "Size" }
-                    th { "Last Modified" }
-                }
-            }
-            tbody {
-                @for file in files {
+        section #file_list {
+            table {
+                thead {
                     tr {
-                        td {
-                            @if file.kind == FaylKind::Directory {
-                                @let link = format!("/files{}/{}", file.parent.as_ref().unwrap_or(&String::new()), file.name);
-                                a hx-boost="true" href=(link) { (file.name) }
-                            } @else {
-                                (file.name)
-                            }
-                        }
-                        td { (file.size) }
-                        td {
-                            @if let Some(last_modified) = file.last_modified {
-                                time datetime=(last_modified) { (last_modified) }
+                        th.icon { "" }
+                        th.name { "Name" }
+                        th.size { "Size" }
+                        th.date { "Last Modified" }
+                    }
+                }
+                tbody {
+                    @for file in files {
+                        @let link = format!("/files{}/{}", file.parent.as_ref().unwrap_or(&String::new()), file.name);
+                        tr hx-get=(link) hx-target="#file_list" hx-push-url="true" {
+                            td.icon { (utils::fayl_icon(file)) }
+                            td.name { span { (file.name) } }
+                            td.size { (utils::format_size(file.size)) }
+                            td.date {
+                                @let lastmod = file.last_modified.map_or(String::new(), |lm| lm.to_string());
+                                time x-data={ "{ time: timeAgo(" (lastmod) ") }" } x-text="time" datetime=(lastmod) { (lastmod) }
                             }
                         }
                     }

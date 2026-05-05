@@ -12,6 +12,10 @@ use crate::{
     utils::{bind_vec, expand_vec_placeholder},
 };
 
+fn is_hx(req: &Request) -> bool {
+    req.header::<bool>("hx-request").is_some_and(|v| v)
+}
+
 async fn list_entries(paths: Vec<Option<String>>) -> Result<Vec<ExistingFayl>> {
     let sql = expand_vec_placeholder(
         r"
@@ -19,7 +23,7 @@ async fn list_entries(paths: Vec<Option<String>>) -> Result<Vec<ExistingFayl>> {
         WHERE parent IN (?)
         ORDER BY
             CASE WHEN kind = 'directory' THEN 0 ELSE 1 END,
-            last_modified
+            last_modified DESC
         ",
         paths.len(),
     );
@@ -34,7 +38,12 @@ async fn list_files_handler(req: &mut Request, res: &mut Response) -> Result {
     let items = list_entries(vec![path]).await?;
 
     res.render(Text::Html(
-        views::layout("Fayls", &views::file_list(&items)).into_string(),
+        if is_hx(req) {
+            views::file_list(&items)
+        } else {
+            views::layout("Fayls", &views::file_list(&items))
+        }
+        .into_string(),
     ));
 
     Ok(())

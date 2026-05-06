@@ -1,5 +1,7 @@
 mod views;
 
+use std::path::PathBuf;
+
 use crate::{
     app,
     error::{Error, Result},
@@ -101,20 +103,42 @@ fn get_sorting(req: &Request) -> (Sort, Order) {
     (sort, order)
 }
 
+fn breadcrumbs(path: Option<&String>) -> Vec<PathBuf> {
+    match path {
+        None => vec![],
+        Some(p) => {
+            let mut path_buf = Some(PathBuf::from(p));
+            let mut parts = vec![];
+            while let Some(path) = path_buf {
+                let is_root = config::get().app.canonicalized_sources().contains(&path);
+                path_buf = path.parent().map(std::path::Path::to_path_buf);
+                parts.push(path);
+
+                if is_root {
+                    break;
+                }
+            }
+            parts.into_iter().rev().collect()
+        }
+    }
+}
+
 #[handler]
 async fn list_files_handler(req: &mut Request, res: &mut Response) -> Result {
     let path = req.param::<&str>("path").map(|p| format!("/{p}"));
     let (sort, order) = get_sorting(req);
 
+    let breadcrumbs = breadcrumbs(path.as_ref());
+
     let items = list_entries(vec![path], &sort, &order).await?;
 
     res.render(Text::Html(
         if is_hx(req) {
-            views::file_list(&items, &sort, &order, req.queries())
+            views::file_list(&items, &sort, &order, &breadcrumbs, req.queries())
         } else {
             views::layout(
                 "Fayls",
-                &views::file_list(&items, &sort, &order, req.queries()),
+                &views::file_list(&items, &sort, &order, &breadcrumbs, req.queries()),
             )
         }
         .into_string(),
@@ -137,11 +161,11 @@ async fn list_roots_handler(req: &Request, res: &mut Response) -> Result {
 
     res.render(Text::Html(
         if is_hx(req) {
-            views::file_list(&items, &sort, &order, req.queries())
+            views::file_list(&items, &sort, &order, &[], req.queries())
         } else {
             views::layout(
                 "Fayls",
-                &views::file_list(&items, &sort, &order, req.queries()),
+                &views::file_list(&items, &sort, &order, &[], req.queries()),
             )
         }
         .into_string(),
@@ -220,7 +244,7 @@ async fn search_handler(req: &mut Request, res: &mut Response) -> Result {
     res.render(Text::Html(
         views::layout(
             &format!("Searching fo {query}"),
-            &views::file_list(&items, &sort, &order, req.queries()),
+            &views::file_list(&items, &sort, &order, &[], req.queries()),
         )
         .into_string(),
     ));

@@ -95,7 +95,7 @@ pub async fn run() {
     });
 
     tokio::select! {
-        () = server.serve(router) => {},
         () = tracker.wait() => {},
+        () = server.serve(router) => {},
     }
 }

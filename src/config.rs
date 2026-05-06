@@ -38,23 +38,27 @@ pub struct App {
     pub pdftoppm_bin: String,
 }
 
+static CANONICALIZED_SOURCES: OnceLock<HashSet<PathBuf>> = OnceLock::new();
+
 impl App {
     #[must_use]
-    pub fn canonicalized_sources(&self) -> HashSet<PathBuf> {
-        self.sources
-            .iter()
-            .filter_map(|p| {
-                p.canonicalize()
-                    .map_err(|err| {
-                        tracing::warn!(
-                            "failed to canonicalize path for source {} ({})",
-                            p.display(),
-                            err
-                        );
-                    })
-                    .ok()
-            })
-            .collect()
+    pub fn canonicalized_sources(&self) -> &HashSet<PathBuf> {
+        CANONICALIZED_SOURCES.get_or_init(|| {
+            self.sources
+                .iter()
+                .filter_map(|p| {
+                    p.canonicalize()
+                        .map_err(|err| {
+                            tracing::warn!(
+                                "failed to canonicalize path for source {} ({})",
+                                p.display(),
+                                err
+                            );
+                        })
+                        .ok()
+                })
+                .collect()
+        })
     }
 }
 

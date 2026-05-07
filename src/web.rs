@@ -134,11 +134,11 @@ async fn list_files_handler(req: &mut Request, res: &mut Response) -> Result {
 
     res.render(Text::Html(
         if is_hx(req) {
-            views::file_list(&items, &sort, &order, &breadcrumbs, req.queries())
+            views::file_list(&items, &sort, &order, &breadcrumbs, false, req.queries())
         } else {
             views::layout(
                 "Fayls",
-                &views::file_list(&items, &sort, &order, &breadcrumbs, req.queries()),
+                &views::file_list(&items, &sort, &order, &breadcrumbs, false, req.queries()),
             )
         }
         .into_string(),
@@ -161,11 +161,11 @@ async fn list_roots_handler(req: &Request, res: &mut Response) -> Result {
 
     res.render(Text::Html(
         if is_hx(req) {
-            views::file_list(&items, &sort, &order, &[], req.queries())
+            views::file_list(&items, &sort, &order, &[], false, req.queries())
         } else {
             views::layout(
                 "Fayls",
-                &views::file_list(&items, &sort, &order, &[], req.queries()),
+                &views::file_list(&items, &sort, &order, &[], false, req.queries()),
             )
         }
         .into_string(),
@@ -241,11 +241,16 @@ async fn search_handler(req: &mut Request, res: &mut Response) -> Result {
     .await?;
 
     let (sort, order) = get_sorting(req);
+    let breadcrumbs = vec![PathBuf::from("/Search results")];
     res.render(Text::Html(
-        views::layout(
-            &format!("Searching fo {query}"),
-            &views::file_list(&items, &sort, &order, &[], req.queries()),
-        )
+        if is_hx(req) {
+            views::file_list(&items, &sort, &order, &breadcrumbs, true, req.queries())
+        } else {
+            views::layout(
+                &format!("Results for {query}"),
+                &views::file_list(&items, &sort, &order, &breadcrumbs, true, req.queries()),
+            )
+        }
         .into_string(),
     ));
 

@@ -1,9 +1,9 @@
 :root {
-  --pico-font-size: 15px;
+  --pico-font-size: 14px;
   --pico-font-family-monospace: "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace, var(--pico-font-family-emoji);
   --muted-background-color: color-mix(in oklab, var(--pico-background-color), black 1%);
-  /* --pico-font-family: var(--pico-font-family-monospace); */
-  /* --pico-font-weight: 300; */
+  --pico-font-family: var(--pico-font-family-monospace);
+  --pico-font-weight: 300;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -12,13 +12,40 @@
   }
 }
 
+body > main {
+  min-height: 100dvh;
+  display: flex;
+  padding-bottom: 0;
+  flex-direction: column;
+}
+
 #file_list {
+  flex-grow: 1;
+  margin-bottom: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+
   table {
     border-collapse: separate;
+    margin-bottom: 0;
+  }
+
+  footer {
+    position: sticky;
+    margin-top: auto;
+    z-index: 2;
+    padding: .5rem 1rem calc(.5rem + 2px) 1.8rem;
+    bottom: 0;
+    background: var(--pico-background-color);
+    color: var(--pico-muted-color);
+    border-top: 2px solid var(--pico-table-border-color);
+    font-family: var(--pico-font-family-monospace);
+    font-size: 13px;
   }
 
   tbody {
-    tr:hover {
+    tr:not(.empty):hover {
       td {
         background-color: color-mix(in oklab, var(--pico-form-element-background-color), black 4%);
 
@@ -39,6 +66,11 @@
     position: sticky;
     top: 0;
     z-index: 2;
+    tr {
+      th {
+        color: var(--pico-muted-color);
+      }
+    }
   }
 
   .name {
@@ -54,11 +86,21 @@
     text-align: right;
   }
 
+  .last_modified, .size {
+    color: var(--pico-muted-color);
+  }
+
   .name span {
     display: block;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+
+    em {
+      opacity: .33;
+      padding-left: 1rem;
+      font-size: 13px;
+    }
   }
 
   th {
@@ -106,8 +148,15 @@
     }
   }
 
-  tr {
+  tr:not(.empty) {
     cursor: pointer;
+  }
+
+  tr.empty {
+    td {
+      color: var(--pico-muted-color);
+      font-style: italic;
+    }
   }
 
   tr {
@@ -203,6 +252,8 @@
       margin-left: var(--ribbon-angle);
 
       li {
+        padding-top: .5rem;
+        padding-bottom: .5rem;
         min-width: 0;
         margin-left: calc(var(--ribbon-spacing) - var(--ribbon-angle));
 
@@ -237,6 +288,11 @@
           a {
             clip-path: polygon(calc(100% - var(--ribbon-angle)) 0, 100% 50%, calc(100% - var(--ribbon-angle)) 100%, 0% 100%, 0% 0%);
             border-radius: var(--pico-border-radius) 0 0 var(--pico-border-radius);
+          }
+
+          svg {
+            margin-left: -.5rem;
+            margin-right: -.2rem;
           }
         }
 

@@ -65,6 +65,18 @@ fn file_list_header(
     }
 }
 
+fn file_row_class(fayl: &ExistingFayl) -> String {
+    if fayl.kind == FaylKind::Directory {
+        "folder".into()
+    } else {
+        fayl.name
+            .split('.')
+            .next_back()
+            .map_or("file".into(), |e| format!("ext-{e}"))
+            .to_lowercase()
+    }
+}
+
 pub fn file_list(
     files: &[ExistingFayl],
     sort: &Sort,
@@ -98,7 +110,7 @@ pub fn file_list(
             table {
                 thead {
                     tr {
-                        th.icon { "" }
+                        th { }
                         (file_list_header(&Sort::Name, sort, order, queries.clone()))
                         (file_list_header(&Sort::Size, sort, order, queries.clone()))
                         (file_list_header(&Sort::LastModified, sort, order, queries.clone()))
@@ -106,10 +118,9 @@ pub fn file_list(
                 }
                 tbody {
                     @for file in files {
-                        @let dir = file.kind == FaylKind::Directory;
                         @let link = format!("/files{}/{}{}", file.parent.as_ref().unwrap_or(&String::new()), file.name, &query_string);
-                        tr.dir[dir] hx-get=(link) hx-target="#file_list" hx-swap="outerHTML" hx-push-url="true" {
-                            td.icon { (utils::fayl_icon(file)) }
+                        tr hx-get=(link) hx-target="#file_list" hx-swap="outerHTML" hx-push-url="true" {
+                            td.icon { i.(file_row_class(file)) {} }
                             td.name { span { (file.name) } }
                             td.size { (utils::format_size(file.size)) }
                             td.last_modified {

@@ -146,6 +146,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64-turbo"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bee2fb34693494976cf5f6e65e7240c9c4d8abdcb9ddda447e15cc70dd3afd33"
+
+[[package]]
 name = "base64ct"
 version = "1.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -726,6 +732,7 @@ name = "fayls"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64-turbo",
  "config",
  "crc-fast",
  "form_urlencoded",

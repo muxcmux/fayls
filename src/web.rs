@@ -1,4 +1,5 @@
 mod views;
+use base64_turbo::URL_SAFE_NO_PAD;
 use futures_util::{FutureExt, StreamExt};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -14,7 +15,6 @@ use std::{
 use crate::{
     app, content_indexing,
     error::{Error, Result},
-    fayls::NewFayl,
 };
 use salvo::{
     conn::tcp::TcpAcceptor,
@@ -39,7 +39,7 @@ fn is_hx(req: &Request) -> bool {
 }
 
 #[derive(Default, Deserialize, PartialEq)]
-enum Order {
+pub enum Order {
     #[default]
     #[serde(rename = "desc")]
     Desc,
@@ -48,7 +48,7 @@ enum Order {
 }
 
 #[derive(Default, Deserialize, PartialEq)]
-enum Sort {
+pub enum Sort {
     #[default]
     #[serde(rename = "last_modified")]
     LastModified,
@@ -92,11 +92,7 @@ impl Sort {
     }
 }
 
-async fn list_entries(
-    paths: Vec<Option<String>>,
-    sort: &Sort,
-    order: &Order,
-) -> Result<Vec<ExistingFayl>> {
+async fn list_entries(paths: &[&str], sort: &Sort, order: &Order) -> Result<Vec<ExistingFayl>> {
     let sql = expand_vec_placeholder(
         &format!(
             r"
@@ -113,68 +109,54 @@ async fn list_entries(
     );
     let query = sqlx::query_as::<_, ExistingFayl>(&sql);
 
-    Ok(bind_vec(query, &paths).fetch_all(app::db()).await?)
+    Ok(bind_vec(query, paths).fetch_all(app::db()).await?)
 }
 
-fn get_sorting(req: &Request) -> (Sort, Order) {
+pub(crate) fn get_sorting(req: &Request) -> (Sort, Order) {
     let sort = req.query::<Sort>("sort").unwrap_or_default();
     let order = req.query::<Order>("order").unwrap_or_default();
     (sort, order)
 }
 
-fn breadcrumbs(path: Option<&String>) -> Vec<PathBuf> {
-    match path {
-        None => vec![],
-        Some(p) => {
-            let mut path_buf = Some(PathBuf::from(p));
-            let mut parts = vec![];
-            while let Some(path) = path_buf {
-                let is_root = config::get().app.canonicalized_sources().contains(&path);
-                path_buf = path.parent().map(std::path::Path::to_path_buf);
-                parts.push(path);
+pub fn breadcrumbs(path: &str) -> Vec<PathBuf> {
+    let mut path_buf = Some(PathBuf::from(path));
+    let mut parts = vec![];
+    while let Some(path) = path_buf {
+        let is_root = config::get().app.canonicalized_sources().contains(&path);
+        path_buf = path.parent().map(std::path::Path::to_path_buf);
+        parts.push(path);
 
-                if is_root {
-                    break;
-                }
-            }
-            parts.into_iter().rev().collect()
+        if is_root {
+            break;
         }
     }
+    parts.into_iter().rev().collect()
 }
 
 #[handler]
 async fn list_files_handler(req: &mut Request, res: &mut Response) -> Result {
-    let path = req.param::<&str>("path").map(|p| format!("/{p}"));
+    // unwrapping here is safe because of the routes guard where
+    // we handle the /files path by serving root dirs
+    let path = req
+        .param::<&str>("path")
+        .map(|p| format!("/{p}"))
+        .expect("this can't happen");
+
     let (sort, order) = get_sorting(req);
+    let items = list_entries(&[path.as_ref()], &sort, &order).await?;
 
-    let breadcrumbs = breadcrumbs(path.as_ref());
-
-    let items = list_entries(vec![path], &sort, &order).await?;
+    let file_list = views::file_list(
+        &views::Folder::Path(path.as_ref()),
+        &items,
+        content_indexing::get_progress().await?,
+        req,
+    );
 
     res.render(Text::Html(
         if is_hx(req) {
-            views::file_list(
-                &items,
-                &sort,
-                &order,
-                &breadcrumbs,
-                false,
-                content_indexing::get_progress().await?,
-                req.queries(),
-            )
+            file_list
         } else {
-            views::layout(
-                "Fayls",
-                &views::file_list(
-                    &items,
-                    &sort,
-                    &order,
-                    &breadcrumbs,
-                    false,
-                    content_indexing::get_progress().await?,
-                    req.queries(),
-                ),
-            )
+            views::layout("Fayls", &file_list)
         }
         .into_string(),
     ));
@@ -188,36 +170,25 @@ async fn list_roots_handler(req: &Request, res: &mut Response) -> Result {
         .app
         .canonicalized_sources()
         .iter()
-        .map(|s| s.parent().map(|p| p.to_string_lossy().to_string()))
-        .collect();
+        .filter_map(|s| s.parent().and_then(|p| p.to_str()))
+        .collect::<Vec<&str>>();
 
     let (sort, order) = get_sorting(req);
-    let items = list_entries(roots, &sort, &order).await?;
+
+    let items = list_entries(&roots, &sort, &order).await?;
+
+    let file_list = views::file_list(
+        &views::Folder::Root(&roots),
+        &items,
+        content_indexing::get_progress().await?,
+        req,
+    );
 
     res.render(Text::Html(
         if is_hx(req) {
-            views::file_list(
-                &items,
-                &sort,
-                &order,
-                &[],
-                false,
-                content_indexing::get_progress().await?,
-                req.queries(),
-            )
+            file_list
         } else {
-            views::layout(
-                "Fayls",
-                &views::file_list(
-                    &items,
-                    &sort,
-                    &order,
-                    &[],
-                    false,
-                    content_indexing::get_progress().await?,
-                    req.queries(),
-                ),
-            )
+            views::layout("Fayls", &file_list)
         }
         .into_string(),
     ));
@@ -291,32 +262,18 @@ async fn search_handler(req: &mut Request, res: &mut Response) -> Result {
     .fetch_all(app::db())
     .await?;
 
-    let (sort, order) = get_sorting(req);
-    let breadcrumbs = vec![PathBuf::from("/Search results")];
+    let file_list = views::file_list(
+        &views::Folder::Search,
+        &items,
+        content_indexing::get_progress().await?,
+        req,
+    );
+
     res.render(Text::Html(
         if is_hx(req) {
-            views::file_list(
-                &items,
-                &sort,
-                &order,
-                &breadcrumbs,
-                true,
-                content_indexing::get_progress().await?,
-                req.queries(),
-            )
+            file_list
         } else {
-            views::layout(
-                &format!("Results for {query}"),
-                &views::file_list(
-                    &items,
-                    &sort,
-                    &order,
-                    &breadcrumbs,
-                    true,
-                    content_indexing::get_progress().await?,
-                    req.queries(),
-                ),
-            )
+            views::layout(&format!("Results for {query}"), &file_list)
         }
         .into_string(),
     ));
@@ -334,7 +291,7 @@ async fn serve_static_file(req: &mut Request, res: &mut Response) -> Result {
 }
 
 #[handler]
-async fn upgrade_to_websocket(req: &mut Request, res: &mut Response) -> Result {
+async fn connect_socket(req: &mut Request, res: &mut Response) -> Result {
     WebSocketUpgrade::new()
         .upgrade(req, res, handle_socket)
         .await
@@ -348,7 +305,7 @@ static WS_CONNECTIONS: LazyLock<WebsocketConnections> =
     LazyLock::new(WebsocketConnections::default);
 
 pub enum Event {
-    Add(Vec<NewFayl>),
+    Insert(Vec<ExistingFayl>),
     Update(Vec<ExistingFayl>),
     // (indexed, total)
     Progress((i64, i64)),
@@ -357,14 +314,34 @@ pub enum Event {
 impl Event {
     fn into_html(self) -> String {
         match self {
-            Event::Progress(progress) => maud::html! {
+            Self::Progress(progress) => maud::html! {
                 hx-partial hx-target="#index-progress" {
                     (views::index_progress(progress))
                 }
+            },
+            Self::Update(fayls) => maud::html! {
+                @for file in fayls {
+                    hx-partial hx-target={ "#file-" (file.id) } {
+                        (views::fayl(&file, false))
+                    }
+                }
+            },
+            Self::Insert(fayls) => maud::html! {
+                @for file in fayls {
+                    @if let Some(ref parent) = file.parent {
+                        @let target = URL_SAFE_NO_PAD.encode(parent);
+                        hx-partial hx-target={ "#" (target) "-empty" } hx-swap="delete" {}
+                        hx-partial hx-target={ "#" (target) } hx-swap="prepend" {
+                            @let link = format!("/files{}/{}", parent, file.name);
+                            tr #{"file-"(file.id)} x-on:click="search_q = ''" hx-get=(link) hx-target="#file-list" hx-push-url="true" {
+                                (views::fayl(&file, false))
+                            }
+                        }
+                    }
+                }
             }
-            .into_string(),
-            _ => String::new(),
         }
+        .into_string()
     }
 }
 
@@ -428,7 +405,7 @@ pub async fn server() -> (Server<TcpAcceptor>, Router) {
                 .push(Router::with_path("{*path}").get(list_files_handler)),
         )
         .push(Router::with_path("search").get(search_handler))
-        .push(Router::with_path("ws").goal(upgrade_to_websocket))
+        .push(Router::with_path("ws").goal(connect_socket))
         // always needs to be last
         .push(Router::with_path("{*file}").get(serve_static_file));
 

@@ -30,6 +30,7 @@ tempfile = "3"
 walkdir = "2"
 
 crc-fast = "1"
+base64-turbo = "0.1"
 
 serde = { version = "1", features = ["derive"] }
 

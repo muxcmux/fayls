@@ -20,7 +20,7 @@ use crate::{
     web::{self, Event},
 };
 
-pub async fn get_progress() -> Result<(i64, i64), sqlx::Error> {
+pub(crate) async fn get_progress() -> Result<(i64, i64), sqlx::Error> {
     sqlx::query_as::<_, (i64, i64)>(
         r"
         SELECT

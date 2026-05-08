@@ -20,7 +20,7 @@ use tokio::{
 };
 use walkdir::{DirEntry, WalkDir};
 
-use crate::{app, config};
+use crate::{app, config, web};
 
 #[derive(Clone, serde::Serialize, PartialEq)]
 pub enum FaylKind {
@@ -91,8 +91,7 @@ pub struct ExistingFayl {
 pub struct ContentIndexable(ExistingFayl);
 
 impl ContentIndexable {
-    #[must_use]
-    pub fn fayl(&self) -> &ExistingFayl {
+    pub(crate) fn fayl(&self) -> &ExistingFayl {
         &self.0
     }
 
@@ -417,25 +416,37 @@ async fn index(
     }
 
     let mut txn = app::db().begin().await.map_err(|_| anyhow!("txn failed"))?;
+
+    let mut to_send_insert_events = Vec::with_capacity(to_insert.len());
     for new in to_insert {
         let existing = new
             .insert(&mut *txn)
             .await
             .map_err(|_| anyhow!("insert failed"))?;
-        if !existing.is_processed() {
+        if existing.is_processed() {
+            to_send_insert_events.push(existing);
+        } else {
+            to_send_insert_events.push(existing.clone());
             to_reindex.push(existing.into_content_indexable());
         }
     }
+
+    let mut to_send_update_events = Vec::with_capacity(to_update.len());
     for (mut existing, size, checksum, last_modified) in to_update {
         existing
             .touch(size, checksum, last_modified, &mut *txn)
             .await
             .map_err(|_| anyhow!("existing touch failed"))?;
+        to_send_update_events.push(existing.clone());
         to_reindex.push(existing.into_content_indexable());
     }
+
     txn.commit()
         .await
         .map_err(|_| anyhow!("txn commit failed"))?;
+
+    web::broadcast(web::Event::Insert(to_send_insert_events));
+    web::broadcast(web::Event::Update(to_send_update_events));
 
     for item in to_reindex.into_iter().flatten() {
         if token.is_cancelled() {

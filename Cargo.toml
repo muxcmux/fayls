@@ -7,10 +7,12 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1", features = ["macros", "signal", "fs", "process"] }
 tokio-util = { version = "0.7", features = ["rt"] }
+tokio-stream = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures-util = "0.3"
 
-salvo ={ version = "0.93", features = ["affix-state", "caching-headers", "compression"] }
+salvo ={ version = "0.93", features = ["affix-state", "caching-headers", "compression", "websocket"] }
 # need these because salvo doesn't re-export them
 # and so you can't pass queries around in functions
 # or build query strings fffs

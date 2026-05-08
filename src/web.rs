@@ -1,13 +1,32 @@
 mod views;
+use futures_util::{FutureExt, StreamExt};
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use std::path::PathBuf;
+use std::{
+    collections::HashMap,
+    path::PathBuf,
+    sync::{
+        LazyLock,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use crate::{
-    app,
+    app, content_indexing,
     error::{Error, Result},
+    fayls::NewFayl,
 };
-use salvo::{conn::tcp::TcpAcceptor, fs::NamedFile, prelude::*};
+use salvo::{
+    conn::tcp::TcpAcceptor,
+    fs::NamedFile,
+    prelude::*,
+    websocket::{Message, WebSocket},
+};
 use serde::Deserialize;
+use tokio::sync::{
+    RwLock,
+    mpsc::{self, UnboundedSender},
+};
 
 use crate::{
     config,
@@ -134,11 +153,27 @@ async fn list_files_handler(req: &mut Request, res: &mut Response) -> Result {
 
     res.render(Text::Html(
         if is_hx(req) {
-            views::file_list(&items, &sort, &order, &breadcrumbs, false, req.queries())
+            views::file_list(
+                &items,
+                &sort,
+                &order,
+                &breadcrumbs,
+                false,
+                content_indexing::get_progress().await?,
+                req.queries(),
+            )
         } else {
             views::layout(
                 "Fayls",
-                &views::file_list(&items, &sort, &order, &breadcrumbs, false, req.queries()),
+                &views::file_list(
+                    &items,
+                    &sort,
+                    &order,
+                    &breadcrumbs,
+                    false,
+                    content_indexing::get_progress().await?,
+                    req.queries(),
+                ),
             )
         }
         .into_string(),
@@ -161,11 +196,27 @@ async fn list_roots_handler(req: &Request, res: &mut Response) -> Result {
 
     res.render(Text::Html(
         if is_hx(req) {
-            views::file_list(&items, &sort, &order, &[], false, req.queries())
+            views::file_list(
+                &items,
+                &sort,
+                &order,
+                &[],
+                false,
+                content_indexing::get_progress().await?,
+                req.queries(),
+            )
         } else {
             views::layout(
                 "Fayls",
-                &views::file_list(&items, &sort, &order, &[], false, req.queries()),
+                &views::file_list(
+                    &items,
+                    &sort,
+                    &order,
+                    &[],
+                    false,
+                    content_indexing::get_progress().await?,
+                    req.queries(),
+                ),
             )
         }
         .into_string(),
@@ -244,11 +295,27 @@ async fn search_handler(req: &mut Request, res: &mut Response) -> Result {
     let breadcrumbs = vec![PathBuf::from("/Search results")];
     res.render(Text::Html(
         if is_hx(req) {
-            views::file_list(&items, &sort, &order, &breadcrumbs, true, req.queries())
+            views::file_list(
+                &items,
+                &sort,
+                &order,
+                &breadcrumbs,
+                true,
+                content_indexing::get_progress().await?,
+                req.queries(),
+            )
         } else {
             views::layout(
                 &format!("Results for {query}"),
-                &views::file_list(&items, &sort, &order, &breadcrumbs, true, req.queries()),
+                &views::file_list(
+                    &items,
+                    &sort,
+                    &order,
+                    &breadcrumbs,
+                    true,
+                    content_indexing::get_progress().await?,
+                    req.queries(),
+                ),
             )
         }
         .into_string(),
@@ -264,6 +331,84 @@ async fn serve_static_file(req: &mut Request, res: &mut Response) -> Result {
     NamedFile::builder(file).send(req.headers(), res).await;
 
     Ok(())
+}
+
+#[handler]
+async fn upgrade_to_websocket(req: &mut Request, res: &mut Response) -> Result {
+    WebSocketUpgrade::new()
+        .upgrade(req, res, handle_socket)
+        .await
+        .map_err(|e| anyhow::anyhow!("websocket error: {e}"))?;
+    Ok(())
+}
+
+type WebsocketConnections = RwLock<HashMap<usize, UnboundedSender<Result<Message, salvo::Error>>>>;
+static NEXT_WS_CONN_ID: AtomicUsize = AtomicUsize::new(1);
+static WS_CONNECTIONS: LazyLock<WebsocketConnections> =
+    LazyLock::new(WebsocketConnections::default);
+
+pub enum Event {
+    Add(Vec<NewFayl>),
+    Update(Vec<ExistingFayl>),
+    // (indexed, total)
+    Progress((i64, i64)),
+}
+
+impl Event {
+    fn into_html(self) -> String {
+        match self {
+            Event::Progress(progress) => maud::html! {
+                hx-partial hx-target="#index-progress" {
+                    (views::index_progress(progress))
+                }
+            }
+            .into_string(),
+            _ => String::new(),
+        }
+    }
+}
+
+pub fn broadcast(event: Event) {
+    tokio::spawn(async move {
+        let msg = Message::text(event.into_html());
+        for (id, tx) in WS_CONNECTIONS.read().await.iter() {
+            if let Err(e) = tx.send(Ok(msg.clone())) {
+                tracing::error!(error = ?e, "sending to tx {id} failed");
+            }
+        }
+    });
+}
+
+async fn handle_socket(ws: WebSocket) {
+    let (ws_tx, mut ws_rx) = ws.split();
+    let (tx, rx) = mpsc::unbounded_channel();
+    let rx = UnboundedReceiverStream::new(rx);
+
+    tokio::spawn(rx.forward(ws_tx).map(|result| {
+        if let Err(e) = result {
+            tracing::error!(error = ?e, "forwarding websocket send error");
+        }
+    }));
+
+    tokio::spawn(async move {
+        let next_id = NEXT_WS_CONN_ID.fetch_add(1, Ordering::Relaxed);
+        WS_CONNECTIONS.write().await.insert(next_id, tx);
+        tracing::info!("web socket id {next_id} connected.");
+        while let Some(result) = ws_rx.next().await {
+            match result {
+                Ok(msg) => {
+                    tracing::info!("web socket msg: {:?}", msg);
+                }
+                Err(e) => {
+                    tracing::info!("web socket err: {e}");
+                    break;
+                }
+            }
+        }
+
+        tracing::info!("web socket id {next_id} disconnected.");
+        WS_CONNECTIONS.write().await.remove(&next_id);
+    });
 }
 
 pub async fn server() -> (Server<TcpAcceptor>, Router) {
@@ -283,6 +428,7 @@ pub async fn server() -> (Server<TcpAcceptor>, Router) {
                 .push(Router::with_path("{*path}").get(list_files_handler)),
         )
         .push(Router::with_path("search").get(search_handler))
+        .push(Router::with_path("ws").goal(upgrade_to_websocket))
         // always needs to be last
         .push(Router::with_path("{*file}").get(serve_static_file));
 

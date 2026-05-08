@@ -14,7 +14,24 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::{config, fayls::ContentIndexable};
+use crate::{
+    app, config,
+    fayls::ContentIndexable,
+    web::{self, Event},
+};
+
+pub async fn get_progress() -> Result<(i64, i64), sqlx::Error> {
+    sqlx::query_as::<_, (i64, i64)>(
+        r"
+        SELECT
+        COUNT(CASE WHEN processed = 1 THEN 1 END) AS processed,
+        COUNT(*) AS total
+        FROM fayls
+    ",
+    )
+    .fetch_one(app::db())
+    .await
+}
 
 async fn extract_image_content(file_path: &Path) -> Result<String> {
     let output = Command::new(&config::get().app.tesseract_bin)
@@ -129,13 +146,16 @@ impl From<Option<&OsStr>> for IndexableFileType {
 }
 
 async fn index(indexable: &mut ContentIndexable) -> Result<()> {
-    let content = extract_content_from_file(indexable.fayl().path().as_ref())
+    let path = indexable.fayl().path_buf();
+    let content = extract_content_from_file(path.as_ref())
         .await
-        .unwrap_or(String::new());
+        .unwrap_or_default();
 
     indexable.index_content(&content).await?;
 
-    tracing::info!("indexed {}", indexable.fayl().path().display());
+    web::broadcast(Event::Progress(get_progress().await?));
+
+    tracing::info!("indexed {}", path.display());
 
     Ok(())
 }

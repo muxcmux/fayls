@@ -67,13 +67,13 @@ impl<'q> Encode<'q, Sqlite> for FaylKind {
     }
 }
 
-struct NewFayl {
-    name: String,
-    parent: Option<String>,
-    kind: FaylKind,
-    size: i64,
-    last_modified: Option<i64>,
-    checksum: Option<i64>,
+pub struct NewFayl {
+    pub name: String,
+    pub parent: Option<String>,
+    pub kind: FaylKind,
+    pub size: i64,
+    pub last_modified: Option<i64>,
+    pub checksum: Option<i64>,
 }
 
 #[derive(Clone, serde::Serialize, sqlx::FromRow)]
@@ -119,7 +119,7 @@ impl ContentIndexable {
 }
 
 impl NewFayl {
-    pub fn path(&self) -> PathBuf {
+    pub(crate) fn path_buf(&self) -> PathBuf {
         match &self.parent {
             Some(p) => Path::new(p).join(&self.name),
             None => PathBuf::from(&self.name),
@@ -164,7 +164,7 @@ impl NewFayl {
 
 impl ExistingFayl {
     #[must_use]
-    pub fn path(&self) -> PathBuf {
+    pub fn path_buf(&self) -> PathBuf {
         match &self.parent {
             Some(p) => Path::new(p).join(&self.name),
             None => PathBuf::from(&self.name),
@@ -404,14 +404,14 @@ async fn index(
 
         if let Some(existing) = existing {
             if existing.is_outdated(&new) {
-                tracing::info!("reindexing: {}", &existing.path().display());
+                tracing::info!("reindexing: {}", &existing.path_buf().display());
                 to_update.push((existing, new.size, new.checksum, new.last_modified));
             } else if !existing.is_processed() {
-                tracing::info!("reindexing: {}", &existing.path().display());
+                tracing::info!("reindexing: {}", &existing.path_buf().display());
                 to_reindex.push(existing.into_content_indexable());
             }
         } else {
-            tracing::info!("indexing: {}", new.path().display());
+            tracing::info!("indexing: {}", new.path_buf().display());
             to_insert.push(new);
         }
     }

@@ -1,6 +1,6 @@
 :root {
   --pico-font-size: 14px;
-  --pico-font-family-monospace: "JetBrainsMono Nerd Font", "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace, var(--pico-font-family-emoji);
+  --pico-font-family-monospace: "JetBrains Mono", "JetBrainsMono Nerd Font", Iosevka, "Iosevka Nerd Font", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace, var(--pico-font-family-emoji);
   --muted-background-color: color-mix(in oklab, var(--pico-background-color), black 1%);
   --pico-font-family: var(--pico-font-family-monospace);
   --pico-font-weight: 300;
@@ -19,7 +19,7 @@ body > main {
   flex-direction: column;
 }
 
-#file_list {
+#file-list {
   flex-grow: 1;
   margin-bottom: 0;
   position: relative;
@@ -42,6 +42,8 @@ body > main {
     border-top: 2px solid var(--pico-table-border-color);
     font-family: var(--pico-font-family-monospace);
     font-size: 13px;
+    display: flex;
+    justify-content: space-between;
   }
 
   tbody {
@@ -306,5 +308,16 @@ body > main {
         }
       }
     }
+  }
+}
+
+#index-progress {
+  display: flex;
+  align-items: center;
+
+  progress {
+    width: 5rem;
+    margin-bottom: 0;
+    margin-left: .5rem;
   }
 }

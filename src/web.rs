@@ -15,6 +15,7 @@ use std::{
 use crate::{
     app, content_indexing,
     error::{Error, Result},
+    fayls::DeletedFayl,
 };
 use salvo::{
     conn::tcp::TcpAcceptor,
@@ -307,6 +308,7 @@ static WS_CONNECTIONS: LazyLock<WebsocketConnections> =
 pub enum Event {
     Insert(Vec<ExistingFayl>),
     Update(Vec<ExistingFayl>),
+    Remove(Vec<DeletedFayl>),
     // (indexed, total)
     Progress((i64, i64)),
 }
@@ -338,6 +340,11 @@ impl Event {
                             }
                         }
                     }
+                }
+            },
+            Self::Remove(fayls) => maud::html! {
+                @for file in fayls {
+                    hx-partial hx-target={ "#file-" (file.id()) } hx-swap="delete" {}
                 }
             }
         }

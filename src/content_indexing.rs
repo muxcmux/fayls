@@ -1,9 +1,6 @@
 use anyhow::{Result, bail};
-use std::{
-    ffi::OsStr,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use pdf_oxide::PdfDocument;
+use std::{ffi::OsStr, path::Path, sync::Arc};
 use tokio::{
     process::Command,
     sync::{
@@ -16,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     app, config,
-    fayls::ContentIndexable,
+    fayls::{ExistingFayl, FaylKind},
     web::{self, Event},
 };
 
@@ -53,58 +50,19 @@ async fn extract_image_content(file_path: &Path) -> Result<String> {
 }
 
 async fn extract_pdf_content(file_path: &Path) -> Result<String> {
-    let temp_dir = tempfile::tempdir()?;
-    let output_prefix = temp_dir.path().join("page");
+    let p = file_path.to_path_buf();
+    tokio::task::spawn_blocking(|| {
+        let doc = PdfDocument::open(p)?;
+        let len = doc.page_count()?;
+        let mut contents = Vec::with_capacity(len);
 
-    let output = Command::new(&config::get().app.pdftoppm_bin)
-        .arg("-png")
-        .arg(file_path)
-        .arg(&output_prefix)
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "pdftoppm failed for {}: {}",
-            file_path.display(),
-            stderr.trim()
-        );
-    }
-
-    let mut page_images = Vec::<PathBuf>::new();
-    let mut entries = tokio::fs::read_dir(temp_dir.path()).await?;
-    while let Some(entry) = entries.next_entry().await? {
-        let path = entry.path();
-        if path
-            .extension()
-            .and_then(OsStr::to_str)
-            .is_some_and(|ext| ext.eq_ignore_ascii_case("png"))
-        {
-            page_images.push(path);
+        for i in 0..len {
+            contents.push(doc.extract_text(i)?);
         }
-    }
 
-    page_images.sort();
-
-    if page_images.is_empty() {
-        bail!(
-            "no images generated from {} by pdftoppm",
-            file_path.display()
-        );
-    }
-
-    let mut content = String::new();
-
-    for page_image in page_images {
-        let page_text = extract_image_content(&page_image).await?;
-        if !content.is_empty() {
-            content.push('\n');
-        }
-        content.push_str(&page_text);
-    }
-
-    Ok(content)
+        Ok(contents.join("\n"))
+    })
+    .await?
 }
 
 async fn extract_content_from_file(file_path: &Path) -> Result<String> {
@@ -145,13 +103,18 @@ impl From<Option<&OsStr>> for IndexableFileType {
     }
 }
 
-async fn index(indexable: &mut ContentIndexable) -> Result<()> {
-    let path = indexable.fayl().path_buf();
-    let content = extract_content_from_file(path.as_ref())
-        .await
-        .unwrap_or_default();
+async fn index(fayl: &mut ExistingFayl) -> Result<()> {
+    let path = fayl.path_buf();
 
-    indexable.index_content(&content).await?;
+    let content = if fayl.kind == FaylKind::Directory {
+        String::new()
+    } else {
+        extract_content_from_file(path.as_ref())
+            .await
+            .unwrap_or_default()
+    };
+
+    fayl.index_content(&content).await?;
 
     web::broadcast(Event::Progress(get_progress().await?));
 
@@ -161,8 +124,8 @@ async fn index(indexable: &mut ContentIndexable) -> Result<()> {
 }
 
 pub(crate) async fn start_indexing(
-    mut rx: UnboundedReceiver<(ContentIndexable, usize)>,
-    tx: UnboundedSender<(ContentIndexable, usize)>,
+    mut rx: UnboundedReceiver<(ExistingFayl, usize)>,
+    tx: UnboundedSender<(ExistingFayl, usize)>,
     token: CancellationToken,
 ) {
     let mut queue: JoinSet<()> = JoinSet::new();
@@ -170,7 +133,7 @@ pub(crate) async fn start_indexing(
         config::get().indexing.max_concurrent_indexers,
     ));
 
-    while let Some((mut indexable, retry)) = rx.recv().await {
+    while let Some((mut fayl, retry)) = rx.recv().await {
         if token.is_cancelled() {
             tracing::info!("breaking content indexing recv loop");
             break;
@@ -179,13 +142,13 @@ pub(crate) async fn start_indexing(
         let tx = tx.clone();
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         queue.spawn(async move {
-            if let Err(err) = index(&mut indexable).await {
+            if let Err(err) = index(&mut fayl).await {
                 if retry > config::get().indexing.max_retries {
                     tracing::error!("content indexing failed: {err}, giving up");
                 } else {
                     let retry = retry + 1;
                     tracing::error!("content indexing failed: {err}, retrying ({retry})");
-                    _ = tx.send((indexable, retry));
+                    _ = tx.send((fayl, retry));
                 }
             }
             drop(permit);

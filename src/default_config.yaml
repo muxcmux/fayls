@@ -1,5 +1,4 @@
 app:
-  pdftoppm_bin: pdftoppm
   tesseract_bin: tesseract
   log_level: info
 server:

@@ -1,11 +1,10 @@
-use crate::config;
+use crate::{
+    config, content_indexing,
+    fayls::{self, EntryFromPathBuf, EntryFromWalkdir, ExistingFayl},
+    fswatch, web,
+};
 use std::{sync::OnceLock, time::Duration};
 
-use crate::{
-    content_indexing,
-    fayls::{self, ContentIndexable},
-    web,
-};
 use sqlx::{
     SqlitePool,
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous},
@@ -16,7 +15,6 @@ use tokio::{
     signal::unix::{SignalKind, signal},
     sync::mpsc,
 };
-use walkdir::DirEntry;
 
 static SQLITE: OnceLock<SqlitePool> = OnceLock::new();
 
@@ -57,10 +55,12 @@ pub async fn load_db() {
 
 pub async fn run() {
     let (scan_tx, scan_rx) = mpsc::unbounded_channel::<()>();
-    let (batch_tx, batch_rx) = mpsc::unbounded_channel::<(Vec<DirEntry>, usize)>();
-    let (index_tx, index_rx) = mpsc::unbounded_channel::<(ContentIndexable, usize)>();
+    let (batch_tx, batch_rx) = mpsc::unbounded_channel::<(Vec<EntryFromWalkdir>, usize)>();
+    let (fs_tx, fs_rx) = mpsc::unbounded_channel::<(Vec<EntryFromPathBuf>, usize)>();
+    let (index_tx, index_rx) = mpsc::unbounded_channel::<(ExistingFayl, usize)>();
 
     let token = CancellationToken::new();
+
     let tracker = TaskTracker::new();
 
     tracker.spawn(content_indexing::start_indexing(
@@ -72,11 +72,20 @@ pub async fn run() {
     tracker.spawn(fayls::start_indexing_batches(
         batch_rx,
         batch_tx.clone(),
+        index_tx.clone(),
+        token.clone(),
+    ));
+
+    tracker.spawn(fayls::start_indexing_batches(
+        fs_rx,
+        fs_tx.clone(),
         index_tx,
         token.clone(),
     ));
 
     tracker.spawn(fayls::start_scanning(scan_rx, batch_tx, token.clone()));
+
+    tracker.spawn(fswatch::watch(token.clone(), fs_tx));
 
     tracker.close();
 

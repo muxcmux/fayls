@@ -58,7 +58,7 @@ pub fn layout(title: &str, file_list: &Markup) -> Markup {
 
                 title { (title) }
             }
-            body hx-ws:connect="/ws" {
+            body hx-ws:connect="/ws" hx-config="ws.pauseOnBackground: false" {
                 main x-data="{ search_q: new URLSearchParams(location.search).get('q') }" {
                     form hx-get="/search" hx-push-url="true" hx-target="#file-list" {
                         input type="search" x-model="search_q" name="q" placeholder="Search...";

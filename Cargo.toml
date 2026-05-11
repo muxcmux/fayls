@@ -28,6 +28,7 @@ thiserror = "2"
 tempfile = "3"
 
 walkdir = "2"
+notify-debouncer-full = { version = "0.8.0-rc.2", features = ["tokio"] }
 
 crc-fast = "1"
 base64-turbo = "0.1"
@@ -35,6 +36,8 @@ base64-turbo = "0.1"
 serde = { version = "1", features = ["derive"] }
 
 config = "0.15"
+
+pdf_oxide = "0.3"
 
 [profile.release]
 lto = true

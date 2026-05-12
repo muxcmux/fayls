@@ -116,7 +116,7 @@ async fn index(fayl: &mut ExistingFayl) -> Result<()> {
 
     fayl.index_content(&content).await?;
 
-    web::broadcast(Event::Progress(get_progress().await?));
+    web::broadcast(&Event::Progress(get_progress().await?));
 
     tracing::info!("indexed {}", path.display());
 

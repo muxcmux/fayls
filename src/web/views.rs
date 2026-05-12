@@ -1,4 +1,5 @@
-use std::path::{Path, PathBuf};
+use crate::config;
+use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf};
 
 use base64_turbo::URL_SAFE_NO_PAD;
 use maud::{DOCTYPE, Markup, html};
@@ -51,14 +52,14 @@ pub fn layout(title: &str, file_list: &Markup) -> Markup {
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.fluid.classless.min.css";
                 link rel="stylesheet" href="/static/app.css";
-                script defer src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/htmx.min.js" {}
-                script defer src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/ext/hx-ws.min.js" {}
+                script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/htmx.min.js" {}
+                script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/ext/hx-sse.min.js" {}
                 script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" {}
                 script src="/static/app.js" {}
 
                 title { (title) }
             }
-            body hx-ws:connect="/ws" hx-config="ws.pauseOnBackground: false" {
+            body {
                 main x-data="{ search_q: new URLSearchParams(location.search).get('q') }" {
                     form hx-get="/search" hx-push-url="true" hx-target="#file-list" {
                         input type="search" x-model="search_q" name="q" placeholder="Search...";
@@ -109,25 +110,78 @@ fn file_row_class(fayl: &ExistingFayl) -> String {
     }
 }
 
-#[derive(PartialEq)]
-pub enum Folder<'a> {
-    Root(&'a [&'a str]),
-    Path(&'a str),
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum View {
+    Root,
+    Path(PathBuf),
     Search,
 }
 
+impl<'de> serde::Deserialize<'de> for View {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+
+        if encoded.is_empty() {
+            return Ok(View::Search);
+        }
+
+        let decoded = URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(serde::de::Error::custom)?;
+
+        let path = PathBuf::from(OsString::from_vec(decoded));
+
+        if path == *"/" {
+            Ok(View::Root)
+        } else {
+            Ok(View::Path(path))
+        }
+    }
+}
+
+impl View {
+    fn breadcrumbs(&self) -> Vec<PathBuf> {
+        match self {
+            View::Path(p) => {
+                let mut path_buf = Some(p.clone());
+                let mut parts = vec![];
+                while let Some(path) = path_buf {
+                    let is_root = config::get().app.canonicalized_sources().contains(&path);
+                    path_buf = path.parent().map(std::path::Path::to_path_buf);
+                    parts.push(path);
+
+                    if is_root {
+                        break;
+                    }
+                }
+                parts.into_iter().rev().collect()
+            }
+            View::Search => vec![PathBuf::from("/Search results")],
+            View::Root => vec![],
+        }
+    }
+
+    fn encode(&self) -> String {
+        match self {
+            View::Path(p) => format!("/{}", URL_SAFE_NO_PAD.encode(p.to_string_lossy().as_ref())),
+            View::Search => String::new(),
+            // "/"
+            View::Root => "/Lw".into(),
+        }
+    }
+}
+
 pub fn file_list(
-    folder: &Folder,
+    folder: &View,
     files: &[ExistingFayl],
     progress: (i64, i64),
     req: &Request,
 ) -> Markup {
-    let show_full_paths = folder == &Folder::Search;
-    let (crumbs, file_rows_id) = match folder {
-        Folder::Path(p) => (web::breadcrumbs(p), URL_SAFE_NO_PAD.encode(p)),
-        Folder::Search => (vec![PathBuf::from("/Search results")], "search-rows".into()),
-        Folder::Root(_) => (vec![], "file-rows".into()),
-    };
+    let show_full_paths = folder == &View::Search;
+    let crumbs = folder.breadcrumbs();
 
     let mut queries_without_search_param = req.queries().clone();
     queries_without_search_param.remove("q");
@@ -151,7 +205,7 @@ pub fn file_list(
             nav {
                 ul {
                     li {
-                        a href={ "/" (&query_string) } x-on:click="search_q = ''" hx-get={ "/" (&query_string) } hx-target="#file-list" hx-push-url="true" {
+                        a href={ "/" (query_string) } x-on:click="search_q = ''" hx-get={ "/" (&query_string) } hx-target="#file-list" hx-push-url="true" {
                             svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" {
                                 path d="M8.354 1.146a.5.5 0 0 0-.708 0l-6 6A.5.5 0 0 0 1.5 7.5v7a.5.5 0 0 0 .5.5h4.5a.5.5 0 0 0 .5-.5v-4h2v4a.5.5 0 0 0 .5.5H14a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.146-.354L13 5.793V2.5a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5v1.293zM2.5 14V7.707l5.5-5.5 5.5 5.5V14H10v-4a.5.5 0 0 0-.5-.5h-3a.5.5 0 0 0-.5.5v4z" {}
                             }
@@ -168,7 +222,7 @@ pub fn file_list(
                 }
             }
         }
-        table {
+        table hx-sse:connect={ "/sse" (folder.encode()) } hx-trigger="load delay:1s" hx-config="ws.pauseOnBackground: false" {
             thead {
                 tr {
                     th { }
@@ -178,26 +232,18 @@ pub fn file_list(
                     (file_list_header(&Sort::LastModified, &sort, &order, req))
                 }
             }
-            tbody #{ (file_rows_id) } {
+            tbody {
                 @if files.is_empty() {
-                    tr #{ (file_rows_id) "-empty" }.empty {
+                    tr.empty {
                         td {}
                         td colspan="3" { "Empty" }
                     }
                 } @else {
                     @for file in files {
                         @let link = format!("/files{}/{}{}", file.parent.as_ref().unwrap_or(&String::new()), file.name, &query_string);
-                        tr #{"file-"(file.id)} x-on:click="search_q = ''" hx-get=(link) hx-target="#file-list" hx-push-url="true" {
+                        tr x-on:click="search_q = ''" hx-get=(link) hx-target="#file-list" hx-push-url="true" {
                             (fayl(file, show_full_paths))
                         }
-                    }
-                }
-            }
-            @if let Folder::Root(roots) = folder {
-                @for root in roots.iter() {
-                    @let parent = Path::new(root).parent().and_then(|p| p.to_str());
-                    @if let Some(p) = parent {
-                        tbody #{ (URL_SAFE_NO_PAD.encode(p)) } {}
                     }
                 }
             }

@@ -1,33 +1,21 @@
 mod views;
-use base64_turbo::URL_SAFE_NO_PAD;
-use futures_util::{FutureExt, StreamExt};
+use futures_util::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use std::{
     collections::HashMap,
     path::PathBuf,
-    sync::{
-        LazyLock,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{LazyLock, Mutex},
 };
 
 use crate::{
     app, content_indexing,
     error::{Error, Result},
-    fayls::DeletedFayl,
+    web::views::View,
 };
-use salvo::{
-    conn::tcp::TcpAcceptor,
-    fs::NamedFile,
-    prelude::*,
-    websocket::{Message, WebSocket},
-};
+use salvo::{conn::tcp::TcpAcceptor, fs::NamedFile, prelude::*};
 use serde::Deserialize;
-use tokio::sync::{
-    RwLock,
-    mpsc::{self, UnboundedSender},
-};
+use tokio::sync::mpsc::{self, UnboundedSender};
 
 use crate::{
     config,
@@ -119,21 +107,6 @@ pub(crate) fn get_sorting(req: &Request) -> (Sort, Order) {
     (sort, order)
 }
 
-pub fn breadcrumbs(path: &str) -> Vec<PathBuf> {
-    let mut path_buf = Some(PathBuf::from(path));
-    let mut parts = vec![];
-    while let Some(path) = path_buf {
-        let is_root = config::get().app.canonicalized_sources().contains(&path);
-        path_buf = path.parent().map(std::path::Path::to_path_buf);
-        parts.push(path);
-
-        if is_root {
-            break;
-        }
-    }
-    parts.into_iter().rev().collect()
-}
-
 #[handler]
 async fn list_files_handler(req: &mut Request, res: &mut Response) -> Result {
     // unwrapping here is safe because of the routes guard where
@@ -147,7 +120,7 @@ async fn list_files_handler(req: &mut Request, res: &mut Response) -> Result {
     let items = list_entries(&[path.as_ref()], &sort, &order).await?;
 
     let file_list = views::file_list(
-        &views::Folder::Path(path.as_ref()),
+        &View::Path(PathBuf::from(path)),
         &items,
         content_indexing::get_progress().await?,
         req,
@@ -179,7 +152,7 @@ async fn list_roots_handler(req: &Request, res: &mut Response) -> Result {
     let items = list_entries(&roots, &sort, &order).await?;
 
     let file_list = views::file_list(
-        &views::Folder::Root(&roots),
+        &View::Root,
         &items,
         content_indexing::get_progress().await?,
         req,
@@ -264,7 +237,7 @@ async fn search_handler(req: &mut Request, res: &mut Response) -> Result {
     .await?;
 
     let file_list = views::file_list(
-        &views::Folder::Search,
+        &View::Search,
         &items,
         content_indexing::get_progress().await?,
         req,
@@ -292,107 +265,86 @@ async fn serve_static_file(req: &mut Request, res: &mut Response) -> Result {
 }
 
 #[handler]
-async fn connect_socket(req: &mut Request, res: &mut Response) -> Result {
-    WebSocketUpgrade::new()
-        .upgrade(req, res, handle_socket)
-        .await
-        .map_err(|e| anyhow::anyhow!("websocket error: {e}"))?;
+async fn sse_connected(req: &Request, res: &mut Response) -> Result {
+    let view = req.param::<View>("view").unwrap_or(View::Search);
+
+    let (tx, rx) = mpsc::unbounded_channel::<Event>();
+    let rx = UnboundedReceiverStream::new(rx);
+
+    {
+        let mut conns = SSE_CONNECTIONS
+            .lock()
+            .map_err(|e| anyhow::anyhow!("mutex acquiring error: {e}"))?;
+
+        if let Some(existing) = conns.get_mut(&view) {
+            existing.push(tx);
+        } else {
+            conns.insert(view, vec![tx]);
+        }
+    }
+
+    broadcast(&Event::Ping);
+
+    let stream = rx.map(|event| Ok::<_, salvo::Error>(event.into_sse_event()));
+
+    SseKeepAlive::new(stream).stream(res);
+
     Ok(())
 }
 
-type WebsocketConnections = RwLock<HashMap<usize, UnboundedSender<Result<Message, salvo::Error>>>>;
-static NEXT_WS_CONN_ID: AtomicUsize = AtomicUsize::new(1);
-static WS_CONNECTIONS: LazyLock<WebsocketConnections> =
-    LazyLock::new(WebsocketConnections::default);
+type SseConnections = Mutex<HashMap<View, Vec<UnboundedSender<Event>>>>;
+static SSE_CONNECTIONS: LazyLock<SseConnections> = LazyLock::new(SseConnections::default);
 
+#[derive(Clone)]
 pub enum Event {
-    Insert(Vec<ExistingFayl>),
-    Update(Vec<ExistingFayl>),
-    Remove(Vec<DeletedFayl>),
+    Ping,
+    Refresh(View),
     // (indexed, total)
     Progress((i64, i64)),
 }
 
 impl Event {
-    fn into_html(self) -> String {
+    fn into_sse_event(self) -> SseEvent {
         match self {
-            Self::Progress(progress) => maud::html! {
-                hx-partial hx-target="#index-progress" {
-                    (views::index_progress(progress))
-                }
-            },
-            Self::Update(fayls) => maud::html! {
-                @for file in fayls {
-                    hx-partial hx-target={ "#file-" (file.id) } {
-                        (views::fayl(&file, false))
+            Self::Ping => SseEvent::default().name("ping"),
+            Self::Refresh(_) => SseEvent::default()
+                .name("refresh")
+                .text("pls refresh yourself"),
+            Self::Progress(progress) => SseEvent::default().text(
+                maud::html! {
+                    hx-partial hx-target="#index-progress" {
+                        (views::index_progress(progress))
                     }
                 }
-            },
-            Self::Insert(fayls) => maud::html! {
-                @for file in fayls {
-                    @if let Some(ref parent) = file.parent {
-                        @let target = URL_SAFE_NO_PAD.encode(parent);
-                        hx-partial hx-target={ "#" (target) "-empty" } hx-swap="delete" {}
-                        hx-partial hx-target={ "#" (target) } hx-swap="prepend" {
-                            @let link = format!("/files{}/{}", parent, file.name);
-                            tr #{"file-"(file.id)} x-on:click="search_q = ''" hx-get=(link) hx-target="#file-list" hx-push-url="true" {
-                                (views::fayl(&file, false))
-                            }
-                        }
-                    }
-                }
-            },
-            Self::Remove(fayls) => maud::html! {
-                @for file in fayls {
-                    hx-partial hx-target={ "#file-" (file.id()) } hx-swap="delete" {}
-                }
-            }
+                .into_string(),
+            ),
         }
-        .into_string()
     }
 }
 
-pub fn broadcast(event: Event) {
-    tokio::spawn(async move {
-        let msg = Message::text(event.into_html());
-        for (id, tx) in WS_CONNECTIONS.read().await.iter() {
-            if let Err(e) = tx.send(Ok(msg.clone())) {
-                tracing::error!(error = ?e, "sending to tx {id} failed");
-            }
+pub fn broadcast(event: &Event) {
+    match SSE_CONNECTIONS.lock() {
+        Ok(mut connections) => connections.retain(|_, conns| {
+            conns.retain(|tx| tx.send(event.clone()).is_ok());
+            !conns.is_empty()
+        }),
+        Err(e) => {
+            tracing::error!(error = ?e, "broadcasting event failed");
         }
-    });
+    }
 }
 
-async fn handle_socket(ws: WebSocket) {
-    let (ws_tx, mut ws_rx) = ws.split();
-    let (tx, rx) = mpsc::unbounded_channel();
-    let rx = UnboundedReceiverStream::new(rx);
-
-    tokio::spawn(rx.forward(ws_tx).map(|result| {
-        if let Err(e) = result {
-            tracing::error!(error = ?e, "forwarding websocket send error");
-        }
-    }));
-
-    tokio::spawn(async move {
-        let next_id = NEXT_WS_CONN_ID.fetch_add(1, Ordering::Relaxed);
-        WS_CONNECTIONS.write().await.insert(next_id, tx);
-        tracing::info!("web socket id {next_id} connected.");
-        while let Some(result) = ws_rx.next().await {
-            match result {
-                Ok(msg) => {
-                    tracing::info!("web socket msg: {:?}", msg);
-                }
-                Err(e) => {
-                    tracing::info!("web socket err: {e}");
-                    break;
-                }
+pub fn broadcast_to_view(event: &Event, view: &View) {
+    match SSE_CONNECTIONS.lock() {
+        Ok(mut connections) => {
+            if let Some(conns) = connections.get_mut(view) {
+                conns.retain(|tx| tx.send(event.clone()).is_ok());
             }
         }
-
-        tracing::info!("web socket id {next_id} disconnected.");
-        WS_CONNECTIONS.write().await.remove(&next_id);
-    });
+        Err(e) => {
+            tracing::error!(error = ?e, "broadcasting event failed");
+        }
+    }
 }
 
 pub async fn server() -> (Server<TcpAcceptor>, Router) {
@@ -412,7 +364,11 @@ pub async fn server() -> (Server<TcpAcceptor>, Router) {
                 .push(Router::with_path("{*path}").get(list_files_handler)),
         )
         .push(Router::with_path("search").get(search_handler))
-        .push(Router::with_path("ws").goal(connect_socket))
+        .push(
+            Router::with_path("sse")
+                .get(sse_connected)
+                .push(Router::with_path("{*view}").get(sse_connected)),
+        )
         // always needs to be last
         .push(Router::with_path("{*file}").get(serve_static_file));
 

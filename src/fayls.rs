@@ -20,7 +20,7 @@ use tokio::{
 };
 use walkdir::{DirEntry, WalkDir};
 
-use crate::{app, config, web};
+use crate::{app, config};
 
 #[derive(Clone, serde::Serialize, PartialEq)]
 pub enum FaylKind {
@@ -199,13 +199,7 @@ impl Entry for EntryFromPathBuf {
     }
 }
 
-pub struct DeletedFayl(ExistingFayl);
-
-impl DeletedFayl {
-    pub(crate) fn id(&self) -> i64 {
-        self.0.id
-    }
-}
+struct DeletedFayl(ExistingFayl);
 
 impl NewFayl {
     pub(crate) fn path_buf(&self) -> PathBuf {
@@ -500,39 +494,30 @@ async fn index_batch<T: Entry>(
 
     let mut txn = app::db().begin().await?;
 
-    let mut to_send_insert_events = Vec::with_capacity(to_insert.len());
     for new in to_insert {
         let existing = new.insert(&mut *txn).await?;
-        if existing.is_processed() {
-            to_send_insert_events.push(existing);
-        } else {
-            to_send_insert_events.push(existing.clone());
-            to_reindex.push(existing);
-        }
+        to_reindex.push(existing);
     }
 
-    let mut to_send_update_events = Vec::with_capacity(to_update.len());
     for (mut existing, size, checksum, last_modified) in to_update {
         existing
             .touch(size, checksum, last_modified, &mut *txn)
             .await?;
-        to_send_update_events.push(existing.clone());
         to_reindex.push(existing);
     }
 
-    let mut to_send_remove_events = Vec::with_capacity(to_delete.len());
     for fayl in to_delete {
         let deleted = fayl.remove(&mut *txn).await?;
-        to_send_remove_events.push(deleted);
     }
 
     txn.commit().await?;
 
-    web::broadcast(web::Event::Insert(to_send_insert_events));
-    web::broadcast(web::Event::Update(to_send_update_events));
-    web::broadcast(web::Event::Remove(
-        to_send_remove_events.into_iter().flatten().collect(),
-    ));
+    // refresh the unique parents of all the entries
+    // web::broadcast(web::Event::Insert(to_send_insert_events));
+    // web::broadcast(web::Event::Update(to_send_update_events));
+    // web::broadcast(web::Event::Remove(
+    //     to_send_remove_events.into_iter().flatten().collect(),
+    // ));
 
     for item in to_reindex {
         if token.is_cancelled() {

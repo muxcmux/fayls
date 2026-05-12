@@ -6,7 +6,6 @@ use std::{
 };
 use tokio_util::sync::CancellationToken;
 
-use crc_fast::checksum_file;
 use sqlx::{
     Decode, Encode, Executor, Sqlite,
     sqlite::{SqliteArgumentValue, SqliteTypeInfo, SqliteValueRef},
@@ -73,7 +72,6 @@ pub struct NewFayl {
     pub kind: FaylKind,
     pub size: i64,
     pub last_modified: Option<i64>,
-    pub checksum: Option<i64>,
 }
 
 #[derive(Clone, serde::Serialize, sqlx::FromRow)]
@@ -84,7 +82,6 @@ pub struct ExistingFayl {
     pub kind: FaylKind,
     pub size: i64,
     pub last_modified: Option<i64>,
-    pub checksum: Option<i64>,
     pub processed: i64,
 }
 
@@ -129,19 +126,10 @@ impl Entry for EntryFromWalkdir {
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
             .map(|duration| duration.as_secs().cast_signed());
 
-        let checksum = checksum_file(
-            crc_fast::CrcAlgorithm::Crc32Iscsi,
-            &entry.path().to_string_lossy(),
-            None,
-        )
-        .ok()
-        .map(u64::cast_signed);
-
         NewFayl {
             kind,
             size,
             last_modified,
-            checksum,
             name: entry.file_name().to_string_lossy().into_owned(),
             parent: entry
                 .path()
@@ -177,19 +165,10 @@ impl Entry for EntryFromPathBuf {
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
             .map(|duration| duration.as_secs().cast_signed());
 
-        let checksum = checksum_file(
-            crc_fast::CrcAlgorithm::Crc32Iscsi,
-            &path.to_string_lossy(),
-            None,
-        )
-        .ok()
-        .map(u64::cast_signed);
-
         NewFayl {
             kind,
             size,
             last_modified,
-            checksum,
             name: path
                 .file_name()
                 .map(|f| f.to_string_lossy().into_owned())
@@ -248,8 +227,8 @@ impl NewFayl {
     {
         sqlx::query_as::<_, ExistingFayl>(
             r"
-            INSERT INTO fayls (name, parent, kind, size, checksum, last_modified)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO fayls (name, parent, kind, size, last_modified)
+            VALUES (?, ?, ?, ?, ?)
             RETURNING *
             ",
         )
@@ -257,7 +236,6 @@ impl NewFayl {
         .bind(&self.parent)
         .bind(&self.kind)
         .bind(self.size)
-        .bind(self.checksum)
         .bind(self.last_modified)
         .fetch_one(db)
         .await
@@ -297,7 +275,6 @@ impl ExistingFayl {
     async fn touch<'e, E>(
         &mut self,
         size: i64,
-        checksum: Option<i64>,
         last_modified: Option<i64>,
         db: E,
     ) -> Result<(), sqlx::Error>
@@ -307,13 +284,12 @@ impl ExistingFayl {
         *self = sqlx::query_as::<_, Self>(
             r"
             UPDATE fayls
-            SET size = ?, checksum = ?, last_modified = ?
+            SET size = ?, last_modified = ?
             WHERE id = ?
             RETURNING *
             ",
         )
         .bind(size)
-        .bind(checksum)
         .bind(last_modified)
         .bind(self.id)
         .fetch_one(db)
@@ -340,7 +316,7 @@ impl ExistingFayl {
     }
 
     fn is_outdated(&self, new: &NewFayl) -> bool {
-        self.last_modified != new.last_modified || self.checksum != new.checksum
+        self.last_modified != new.last_modified
     }
 }
 
@@ -481,7 +457,7 @@ async fn index_batch<T: Entry>(
         if let Some(existing) = existing {
             if existing.is_outdated(&new) {
                 tracing::info!("reindexing: {}", &existing.path_buf().display());
-                to_update.push((existing, new.size, new.checksum, new.last_modified));
+                to_update.push((existing, new.size, new.last_modified));
             } else if !existing.is_processed() {
                 tracing::info!("reindexing: {}", &existing.path_buf().display());
                 to_reindex.push(existing);
@@ -499,10 +475,8 @@ async fn index_batch<T: Entry>(
         to_reindex.push(existing);
     }
 
-    for (mut existing, size, checksum, last_modified) in to_update {
-        existing
-            .touch(size, checksum, last_modified, &mut *txn)
-            .await?;
+    for (mut existing, size, last_modified) in to_update {
+        existing.touch(size, last_modified, &mut *txn).await?;
         to_reindex.push(existing);
     }
 

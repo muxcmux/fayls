@@ -4,7 +4,6 @@ CREATE TABLE "fayls" (
   "parent" varchar,
   "kind" varchar NOT NULL,
   "size" integer NOT NULL,
-  "checksum" integer,
   "last_modified" integer,
   "processed" integer NOT NULL DEFAULT 0,
   UNIQUE ("parent", "name")

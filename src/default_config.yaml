@@ -5,7 +5,7 @@ server:
   address: 127.0.0.1
   port: 8080
 database:
-  path: data/fayls.db
+  path: data/database.db
   max_connections: 2
 indexing:
   batch_size: 1000

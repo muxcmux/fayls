@@ -1,4 +1,4 @@
-CREATE TABLE "fayls" (
+CREATE TABLE "paths" (
   "id" integer PRIMARY KEY,
   "name" varchar NOT NULL,
   "parent" varchar,

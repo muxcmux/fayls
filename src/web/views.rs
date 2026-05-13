@@ -7,7 +7,7 @@ use multimap::MultiMap;
 use salvo::Request;
 
 use crate::{
-    fayls::{ExistingFayl, FaylKind},
+    path_indexing::{ExistingPathRecord, PathRecordKind},
     web::{self, Order, Sort},
 };
 
@@ -98,11 +98,12 @@ fn file_list_header(col: &Sort, sort: &Sort, order: &Order, req: &Request) -> Ma
     }
 }
 
-fn file_row_class(fayl: &ExistingFayl) -> String {
-    if fayl.kind == FaylKind::Directory {
+fn file_row_class(record: &ExistingPathRecord) -> String {
+    if record.kind == PathRecordKind::Directory {
         "folder".into()
     } else {
-        fayl.name
+        record
+            .name
             .split('.')
             .next_back()
             .map_or("file".into(), |e| format!("ext-{e}"))
@@ -176,7 +177,7 @@ impl View {
 
 pub fn file_list(
     folder: &View,
-    files: &[ExistingFayl],
+    files: &[ExistingPathRecord],
     progress: (i64, i64),
     req: &Request,
 ) -> Markup {
@@ -194,9 +195,9 @@ pub fn file_list(
     for f in files {
         total_size += f.size;
         match f.kind {
-            FaylKind::Directory => total_dirs += 1,
-            FaylKind::File => total_files += 1,
-            FaylKind::Symlink => {}
+            PathRecordKind::Directory => total_dirs += 1,
+            PathRecordKind::File => total_files += 1,
+            PathRecordKind::Symlink => {}
         }
     }
 
@@ -242,7 +243,7 @@ pub fn file_list(
                     @for file in files {
                         @let link = format!("/files{}/{}{}", file.parent.as_ref().unwrap_or(&String::new()), file.name, &query_string);
                         tr x-on:click="search_q = ''" hx-get=(link) hx-target="#file-list" hx-push-url="true" {
-                            (fayl(file, show_full_paths))
+                            (row(file, show_full_paths))
                         }
                     }
                 }
@@ -269,20 +270,20 @@ pub fn file_list(
     }
 }
 
-pub fn fayl(file: &ExistingFayl, show_full_paths: bool) -> Markup {
+pub fn row(record: &ExistingPathRecord, show_full_paths: bool) -> Markup {
     html! {
-        td.icon { i.(file_row_class(file)) {} }
+        td.icon { i.(file_row_class(record)) {} }
         td.name {
             span {
-                (file.name)
+                (record.name)
                 @if show_full_paths {
-                    em { (file.parent.as_deref().unwrap_or("")) }
+                    em { (record.parent.as_deref().unwrap_or("")) }
                 }
             }
         }
-        td.size { (format_size(file.size)) }
+        td.size { (format_size(record.size)) }
         td.last_modified {
-            @let lastmod = file.last_modified.map_or(String::new(), |lm| lm.to_string());
+            @let lastmod = record.last_modified.map_or(String::new(), |lm| lm.to_string());
             time x-data={ "{ time: timeAgo(" (lastmod) ") }" } x-text="time" datetime=(lastmod) { (lastmod) }
         }
     }

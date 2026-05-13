@@ -1,7 +1,7 @@
 use crate::{
-    config, content_indexing,
-    fayls::{self, EntryFromPathBuf, EntryFromWalkdir, ExistingFayl},
-    fswatch, web,
+    config, content_indexing, fswatch,
+    path_indexing::{self, EntryFromPathBuf, EntryFromWalkdir, ExistingPathRecord},
+    web,
 };
 use std::{sync::OnceLock, time::Duration};
 
@@ -57,7 +57,7 @@ pub async fn run() {
     let (scan_tx, scan_rx) = mpsc::unbounded_channel::<()>();
     let (batch_tx, batch_rx) = mpsc::unbounded_channel::<(Vec<EntryFromWalkdir>, usize)>();
     let (fs_tx, fs_rx) = mpsc::unbounded_channel::<(Vec<EntryFromPathBuf>, usize)>();
-    let (index_tx, index_rx) = mpsc::unbounded_channel::<(ExistingFayl, usize)>();
+    let (index_tx, index_rx) = mpsc::unbounded_channel::<(ExistingPathRecord, usize)>();
 
     let token = CancellationToken::new();
 
@@ -69,21 +69,25 @@ pub async fn run() {
         token.clone(),
     ));
 
-    tracker.spawn(fayls::start_indexing_batches(
+    tracker.spawn(path_indexing::start_indexing_batches(
         batch_rx,
         batch_tx.clone(),
         index_tx.clone(),
         token.clone(),
     ));
 
-    tracker.spawn(fayls::start_indexing_batches(
+    tracker.spawn(path_indexing::start_indexing_batches(
         fs_rx,
         fs_tx.clone(),
         index_tx,
         token.clone(),
     ));
 
-    tracker.spawn(fayls::start_scanning(scan_rx, batch_tx, token.clone()));
+    tracker.spawn(path_indexing::start_scanning(
+        scan_rx,
+        batch_tx,
+        token.clone(),
+    ));
 
     tracker.spawn(fswatch::watch(token.clone(), fs_tx));
 

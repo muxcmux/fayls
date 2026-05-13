@@ -19,7 +19,7 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 
 use crate::{
     config,
-    fayls::ExistingFayl,
+    path_indexing::ExistingPathRecord,
     utils::{bind_vec, expand_vec_placeholder},
 };
 
@@ -81,11 +81,15 @@ impl Sort {
     }
 }
 
-async fn list_entries(paths: &[&str], sort: &Sort, order: &Order) -> Result<Vec<ExistingFayl>> {
+async fn list_entries(
+    paths: &[&str],
+    sort: &Sort,
+    order: &Order,
+) -> Result<Vec<ExistingPathRecord>> {
     let sql = expand_vec_placeholder(
         &format!(
             r"
-            SELECT * FROM fayls
+            SELECT * FROM paths
             WHERE parent IN (?)
             ORDER BY
                 CASE WHEN kind = 'directory' THEN 0 ELSE 1 END,
@@ -96,7 +100,7 @@ async fn list_entries(paths: &[&str], sort: &Sort, order: &Order) -> Result<Vec<
         ),
         paths.len(),
     );
-    let query = sqlx::query_as::<_, ExistingFayl>(&sql);
+    let query = sqlx::query_as::<_, ExistingPathRecord>(&sql);
 
     Ok(bind_vec(query, paths).fetch_all(app::db()).await?)
 }
@@ -170,7 +174,7 @@ async fn list_roots_handler(req: &Request, res: &mut Response) -> Result {
     Ok(())
 }
 
-const FILENAME_QUERY: &str = "SELECT * FROM fayls WHERE name LIKE '%' || ? || '%' LIMIT 20";
+const FILENAME_QUERY: &str = "SELECT * FROM paths WHERE name LIKE '%' || ? || '%' LIMIT 20";
 
 const FTS_QUERY: &str = r"
     WITH
@@ -179,7 +183,7 @@ const FTS_QUERY: &str = r"
             f.*,
             1 AS result_group,
             NULL AS rank
-        FROM fayls AS f
+        FROM paths AS f
         WHERE f.name LIKE '%' || ?1 || '%'
     ),
 
@@ -189,7 +193,7 @@ const FTS_QUERY: &str = r"
             2 AS result_group,
             bm25(content_index, 10.0, 5.0) AS rank
         FROM content_index
-        JOIN fayls AS f
+        JOIN paths AS f
           ON f.id = content_index.rowid
         WHERE content_index MATCH ?1
           AND f.id NOT IN (SELECT id FROM name_hits)
@@ -227,7 +231,7 @@ async fn search_handler(req: &mut Request, res: &mut Response) -> Result {
         .query::<&str>("q")
         .ok_or(Error::BadRequest("no query param"))?;
 
-    let items = sqlx::query_as::<_, ExistingFayl>(if is_valid_fts(query).await {
+    let items = sqlx::query_as::<_, ExistingPathRecord>(if is_valid_fts(query).await {
         FTS_QUERY
     } else {
         FILENAME_QUERY

@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     app, config,
-    fayls::{ExistingFayl, FaylKind},
+    path_indexing::{ExistingPathRecord, PathRecordKind},
     web::{self, Event},
 };
 
@@ -23,7 +23,7 @@ pub(crate) async fn get_progress() -> Result<(i64, i64), sqlx::Error> {
         SELECT
         COUNT(CASE WHEN processed = 1 THEN 1 END) AS processed,
         COUNT(*) AS total
-        FROM fayls
+        FROM paths
     ",
     )
     .fetch_one(app::db())
@@ -103,10 +103,10 @@ impl From<Option<&OsStr>> for IndexableFileType {
     }
 }
 
-async fn index(fayl: &mut ExistingFayl) -> Result<()> {
-    let path = fayl.path_buf();
+async fn index(record: &mut ExistingPathRecord) -> Result<()> {
+    let path = record.path_buf();
 
-    let content = if fayl.kind == FaylKind::Directory {
+    let content = if record.kind == PathRecordKind::Directory {
         String::new()
     } else {
         extract_content_from_file(path.as_ref())
@@ -114,7 +114,7 @@ async fn index(fayl: &mut ExistingFayl) -> Result<()> {
             .unwrap_or_default()
     };
 
-    fayl.index_content(&content).await?;
+    record.index_content(&content).await?;
 
     web::broadcast(&Event::Progress(get_progress().await?));
 
@@ -124,8 +124,8 @@ async fn index(fayl: &mut ExistingFayl) -> Result<()> {
 }
 
 pub(crate) async fn start_indexing(
-    mut rx: UnboundedReceiver<(ExistingFayl, usize)>,
-    tx: UnboundedSender<(ExistingFayl, usize)>,
+    mut rx: UnboundedReceiver<(ExistingPathRecord, usize)>,
+    tx: UnboundedSender<(ExistingPathRecord, usize)>,
     token: CancellationToken,
 ) {
     let mut queue: JoinSet<()> = JoinSet::new();
@@ -133,7 +133,7 @@ pub(crate) async fn start_indexing(
         config::get().indexing.max_concurrent_indexers,
     ));
 
-    while let Some((mut fayl, retry)) = rx.recv().await {
+    while let Some((mut record, retry)) = rx.recv().await {
         if token.is_cancelled() {
             tracing::info!("breaking content indexing recv loop");
             break;
@@ -142,13 +142,13 @@ pub(crate) async fn start_indexing(
         let tx = tx.clone();
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         queue.spawn(async move {
-            if let Err(err) = index(&mut fayl).await {
+            if let Err(err) = index(&mut record).await {
                 if retry > config::get().indexing.max_retries {
                     tracing::error!("content indexing failed: {err}, giving up");
                 } else {
                     let retry = retry + 1;
                     tracing::error!("content indexing failed: {err}, retrying ({retry})");
-                    _ = tx.send((fayl, retry));
+                    _ = tx.send((record, retry));
                 }
             }
             drop(permit);

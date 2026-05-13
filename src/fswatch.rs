@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{collections::HashSet, time::Duration};
 
 use anyhow::Result;
 use notify_debouncer_full::{
@@ -8,7 +8,7 @@ use notify_debouncer_full::{
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 
-use crate::{config, fayls::EntryFromPathBuf};
+use crate::{config, path_indexing::EntryFromPathBuf};
 
 pub(crate) async fn watch(
     token: CancellationToken,
@@ -58,20 +58,21 @@ fn handle_events(
     events: Vec<DebouncedEvent>,
     tx: &UnboundedSender<(Vec<EntryFromPathBuf>, usize)>,
 ) {
-    let mut entries = Vec::with_capacity(events.len() * 3);
+    let mut entries = HashSet::with_capacity(events.len() * 3);
 
     for event in events {
         for path in &event.paths {
-            let path = path.clone();
-            if let Some(parent) = path.parent() {
-                let parent = parent.to_path_buf();
-                if !entries.contains(&parent) {
-                    entries.push(parent);
-                }
-            }
+            entries.insert(path.clone());
 
-            if !entries.contains(&path) {
-                entries.push(path);
+            let mut path = path.clone();
+            while let Some(parent) = path.parent() {
+                entries.insert(parent.to_path_buf());
+
+                if config::get().app.canonicalized_sources().contains(&path) {
+                    break;
+                }
+
+                path = parent.to_path_buf();
             }
         }
     }

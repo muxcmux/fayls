@@ -22,42 +22,42 @@ use walkdir::{DirEntry, WalkDir};
 use crate::{app, config};
 
 #[derive(Clone, serde::Serialize, PartialEq)]
-pub enum FaylKind {
+pub enum PathRecordKind {
     File,
     Symlink,
     Directory,
 }
 
-impl FaylKind {
+impl PathRecordKind {
     fn as_str(&self) -> &'static str {
         match self {
-            FaylKind::File => "file",
-            FaylKind::Symlink => "symlink",
-            FaylKind::Directory => "directory",
+            Self::File => "file",
+            Self::Symlink => "symlink",
+            Self::Directory => "directory",
         }
     }
 }
 
-impl sqlx::Type<Sqlite> for FaylKind {
+impl sqlx::Type<Sqlite> for PathRecordKind {
     fn type_info() -> SqliteTypeInfo {
         <String as sqlx::Type<Sqlite>>::type_info()
     }
 }
 
-impl<'r> Decode<'r, Sqlite> for FaylKind {
+impl<'r> Decode<'r, Sqlite> for PathRecordKind {
     fn decode(value: SqliteValueRef<'r>) -> Result<Self, sqlx::error::BoxDynError> {
         let s = <String as Decode<Sqlite>>::decode(value)?;
 
         match s.as_str() {
-            "file" => Ok(FaylKind::File),
-            "symlink" => Ok(FaylKind::Symlink),
-            "directory" => Ok(FaylKind::Directory),
+            "file" => Ok(Self::File),
+            "symlink" => Ok(Self::Symlink),
+            "directory" => Ok(Self::Directory),
             _ => Err(format!("invalid status: {s}").into()),
         }
     }
 }
 
-impl<'q> Encode<'q, Sqlite> for FaylKind {
+impl<'q> Encode<'q, Sqlite> for PathRecordKind {
     fn encode_by_ref(
         &self,
         buf: &mut Vec<SqliteArgumentValue<'q>>,
@@ -66,20 +66,20 @@ impl<'q> Encode<'q, Sqlite> for FaylKind {
     }
 }
 
-pub struct NewFayl {
+pub struct NewPathRecord {
     pub name: String,
     pub parent: Option<String>,
-    pub kind: FaylKind,
+    pub kind: PathRecordKind,
     pub size: i64,
     pub last_modified: Option<i64>,
 }
 
 #[derive(Clone, serde::Serialize, sqlx::FromRow)]
-pub struct ExistingFayl {
+pub struct ExistingPathRecord {
     pub id: i64,
     pub name: String,
     pub parent: Option<String>,
-    pub kind: FaylKind,
+    pub kind: PathRecordKind,
     pub size: i64,
     pub last_modified: Option<i64>,
     pub processed: i64,
@@ -87,7 +87,7 @@ pub struct ExistingFayl {
 
 pub(crate) trait Entry {
     fn exists_on_disk(&self) -> bool;
-    fn new_fayl(&self) -> NewFayl;
+    fn new_record(&self) -> NewPathRecord;
 }
 
 pub struct EntryFromWalkdir(DirEntry);
@@ -105,15 +105,15 @@ impl Entry for EntryFromWalkdir {
         true
     }
 
-    fn new_fayl(&self) -> NewFayl {
+    fn new_record(&self) -> NewPathRecord {
         let entry = &self.0;
         let metadata = entry.metadata().ok();
         let kind = if entry.file_type().is_dir() {
-            FaylKind::Directory
+            PathRecordKind::Directory
         } else if entry.file_type().is_symlink() {
-            FaylKind::Symlink
+            PathRecordKind::Symlink
         } else {
-            FaylKind::File
+            PathRecordKind::File
         };
         let size = (if entry.file_type().is_dir() {
             dir_size(entry.path())
@@ -126,7 +126,7 @@ impl Entry for EntryFromWalkdir {
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
             .map(|duration| duration.as_secs().cast_signed());
 
-        NewFayl {
+        NewPathRecord {
             kind,
             size,
             last_modified,
@@ -144,15 +144,15 @@ impl Entry for EntryFromPathBuf {
         self.0.exists()
     }
 
-    fn new_fayl(&self) -> NewFayl {
+    fn new_record(&self) -> NewPathRecord {
         let path = &self.0;
         let metadata = path.metadata().ok();
         let kind = if path.is_dir() {
-            FaylKind::Directory
+            PathRecordKind::Directory
         } else if path.is_symlink() {
-            FaylKind::Symlink
+            PathRecordKind::Symlink
         } else {
-            FaylKind::File
+            PathRecordKind::File
         };
         let size = (if path.is_dir() {
             dir_size(path.as_path())
@@ -165,7 +165,7 @@ impl Entry for EntryFromPathBuf {
             .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
             .map(|duration| duration.as_secs().cast_signed());
 
-        NewFayl {
+        NewPathRecord {
             kind,
             size,
             last_modified,
@@ -178,9 +178,7 @@ impl Entry for EntryFromPathBuf {
     }
 }
 
-struct DeletedFayl(ExistingFayl);
-
-impl NewFayl {
+impl NewPathRecord {
     pub(crate) fn path_buf(&self) -> PathBuf {
         match &self.parent {
             Some(p) => Path::new(p).join(&self.name),
@@ -188,32 +186,31 @@ impl NewFayl {
         }
     }
 
-    async fn remove<'e, E>(&self, db: E) -> Result<Vec<DeletedFayl>, sqlx::Error>
+    async fn remove<'e, E>(&self, db: E) -> Result<(), sqlx::Error>
     where
         E: Executor<'e, Database = Sqlite>,
     {
-        let deleted = sqlx::query_as::<_, ExistingFayl>(
+        sqlx::query(
             r"
-            DELETE FROM fayls WHERE (name = ? AND parent = ?)
+            DELETE FROM paths WHERE (name = ? AND parent = ?)
             OR parent LIKE ? || '%'
-            RETURNING *
             ",
         )
         .bind(&self.name)
         .bind(&self.parent)
         .bind(self.path_buf().to_string_lossy())
-        .fetch_all(db)
+        .execute(db)
         .await?;
 
-        Ok(deleted.into_iter().map(DeletedFayl).collect())
+        Ok(())
     }
 
-    async fn find_existing<'e, E>(&self, db: E) -> Result<Option<ExistingFayl>, sqlx::Error>
+    async fn find_existing<'e, E>(&self, db: E) -> Result<Option<ExistingPathRecord>, sqlx::Error>
     where
         E: Executor<'e, Database = Sqlite>,
     {
-        sqlx::query_as::<_, ExistingFayl>(
-            "SELECT * FROM fayls WHERE name = ? AND parent = ? LIMIT 1",
+        sqlx::query_as::<_, ExistingPathRecord>(
+            "SELECT * FROM paths WHERE name = ? AND parent = ? LIMIT 1",
         )
         .bind(&self.name)
         .bind(&self.parent)
@@ -221,13 +218,13 @@ impl NewFayl {
         .await
     }
 
-    async fn insert<'e, E>(self, db: E) -> Result<ExistingFayl, sqlx::Error>
+    async fn insert<'e, E>(self, db: E) -> Result<ExistingPathRecord, sqlx::Error>
     where
         E: Executor<'e, Database = Sqlite>,
     {
-        sqlx::query_as::<_, ExistingFayl>(
+        sqlx::query_as::<_, ExistingPathRecord>(
             r"
-            INSERT INTO fayls (name, parent, kind, size, last_modified)
+            INSERT INTO paths (name, parent, kind, size, last_modified)
             VALUES (?, ?, ?, ?, ?)
             RETURNING *
             ",
@@ -242,7 +239,7 @@ impl NewFayl {
     }
 }
 
-impl ExistingFayl {
+impl ExistingPathRecord {
     #[must_use]
     pub fn path_buf(&self) -> PathBuf {
         match &self.parent {
@@ -283,7 +280,7 @@ impl ExistingFayl {
     {
         *self = sqlx::query_as::<_, Self>(
             r"
-            UPDATE fayls
+            UPDATE paths
             SET size = ?, last_modified = ?
             WHERE id = ?
             RETURNING *
@@ -307,7 +304,7 @@ impl ExistingFayl {
         E: Executor<'e, Database = Sqlite>,
     {
         *self =
-            sqlx::query_as::<_, Self>("UPDATE fayls SET processed = 1 WHERE id = ? RETURNING *")
+            sqlx::query_as::<_, Self>("UPDATE paths SET processed = 1 WHERE id = ? RETURNING *")
                 .bind(self.id)
                 .fetch_one(db)
                 .await?;
@@ -315,7 +312,7 @@ impl ExistingFayl {
         Ok(())
     }
 
-    fn is_outdated(&self, new: &NewFayl) -> bool {
+    fn is_outdated(&self, new: &NewPathRecord) -> bool {
         self.last_modified != new.last_modified
     }
 }
@@ -395,7 +392,7 @@ fn scan(tx: &UnboundedSender<(Vec<EntryFromWalkdir>, usize)>, token: &Cancellati
 pub(crate) async fn start_indexing_batches<T: Entry + Send + Sync + 'static>(
     mut batch_rx: UnboundedReceiver<(Vec<T>, usize)>,
     batch_tx: UnboundedSender<(Vec<T>, usize)>,
-    index_tx: UnboundedSender<(ExistingFayl, usize)>,
+    index_tx: UnboundedSender<(ExistingPathRecord, usize)>,
     token: CancellationToken,
 ) {
     let mut queue: JoinSet<()> = JoinSet::new();
@@ -432,7 +429,7 @@ pub(crate) async fn start_indexing_batches<T: Entry + Send + Sync + 'static>(
 
 async fn index_batch<T: Entry>(
     entries: &[T],
-    tx: UnboundedSender<(ExistingFayl, usize)>,
+    tx: UnboundedSender<(ExistingPathRecord, usize)>,
     token: CancellationToken,
 ) -> Result<()> {
     let mut to_reindex = Vec::with_capacity(entries.len());
@@ -446,11 +443,11 @@ async fn index_batch<T: Entry>(
         }
 
         if !entry.exists_on_disk() {
-            to_delete.push(entry.new_fayl());
+            to_delete.push(entry.new_record());
             continue;
         }
 
-        let new = entry.new_fayl();
+        let new = entry.new_record();
 
         let existing = new.find_existing(app::db()).await?;
 
@@ -480,13 +477,12 @@ async fn index_batch<T: Entry>(
         to_reindex.push(existing);
     }
 
-    for fayl in to_delete {
-        let deleted = fayl.remove(&mut *txn).await?;
+    for record in to_delete {
+        record.remove(&mut *txn).await?;
     }
 
     txn.commit().await?;
 
-    // refresh the unique parents of all the entries
     // web::broadcast(web::Event::Insert(to_send_insert_events));
     // web::broadcast(web::Event::Update(to_send_update_events));
     // web::broadcast(web::Event::Remove(

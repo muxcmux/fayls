@@ -7,13 +7,11 @@ use notify_debouncer_full::{
 };
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_util::sync::CancellationToken;
+use walkdir::WalkDir;
 
-use crate::{config, path_indexing::EntryFromPathBuf};
+use crate::{config, path_indexing::IndexEvent};
 
-pub(crate) async fn watch(
-    token: CancellationToken,
-    tx: UnboundedSender<(Vec<EntryFromPathBuf>, usize)>,
-) {
+pub(crate) async fn watch(token: CancellationToken, tx: UnboundedSender<(Vec<IndexEvent>, usize)>) {
     if let Err(e) = monitor_fs(token, tx).await {
         tracing::warn!(error = ?e, "fs watch error, filesystem monitoring disabled");
     }
@@ -21,7 +19,7 @@ pub(crate) async fn watch(
 
 async fn monitor_fs(
     token: CancellationToken,
-    tx: UnboundedSender<(Vec<EntryFromPathBuf>, usize)>,
+    index_tx: UnboundedSender<(Vec<IndexEvent>, usize)>,
 ) -> Result<()> {
     let (fs_tx, mut fs_rx) = mpsc::unbounded_channel();
     let notify_config = notify::Config::default().with_event_kinds(EventKindMask::CORE);
@@ -44,7 +42,7 @@ async fn monitor_fs(
         }
 
         match result {
-            Ok(events) => handle_events(events, &tx),
+            Ok(events) => handle_events(events, &index_tx),
             Err(errors) => errors
                 .iter()
                 .for_each(|e| tracing::warn!(error = ?e, "fs events failed")),
@@ -56,26 +54,36 @@ async fn monitor_fs(
 
 fn handle_events(
     events: Vec<DebouncedEvent>,
-    tx: &UnboundedSender<(Vec<EntryFromPathBuf>, usize)>,
+    index_tx: &UnboundedSender<(Vec<IndexEvent>, usize)>,
 ) {
-    let mut entries = HashSet::with_capacity(events.len() * 3);
+    let mut index_events = HashSet::with_capacity(events.len() * 3);
 
     for event in events {
         for path in &event.paths {
-            entries.insert(path.clone());
-
-            let mut path = path.clone();
-            while let Some(parent) = path.parent() {
-                entries.insert(parent.to_path_buf());
-
-                if config::get().app.canonicalized_sources().contains(&path) {
-                    break;
+            if path.exists() {
+                if path.is_dir() {
+                    for entry in WalkDir::new(path).min_depth(0).into_iter().flatten() {
+                        index_events.insert(IndexEvent::Update(entry.into_path()));
+                    }
+                } else {
+                    index_events.insert(IndexEvent::Update(path.clone()));
                 }
+            } else {
+                index_events.insert(IndexEvent::Remove(path.clone()));
+            }
 
-                path = parent.to_path_buf();
+            if !config::get().app.canonicalized_sources().contains(path) {
+                for parent in path.ancestors().skip(1) {
+                    let is_root = config::get().app.canonicalized_sources().contains(parent);
+                    index_events.insert(IndexEvent::ForceUpdate(parent.to_path_buf()));
+
+                    if is_root {
+                        break;
+                    }
+                }
             }
         }
     }
 
-    _ = tx.send((entries.into_iter().map(EntryFromPathBuf::from).collect(), 0));
+    _ = index_tx.send((index_events.into_iter().collect(), 0));
 }

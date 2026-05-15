@@ -1,6 +1,6 @@
 use crate::{
     config, content_indexing, fswatch,
-    path_indexing::{self, EntryFromPathBuf, EntryFromWalkdir, ExistingPathRecord},
+    path_indexing::{self, ExistingPathRecord, IndexEvent},
     web,
 };
 use std::{sync::OnceLock, time::Duration};
@@ -55,41 +55,34 @@ pub async fn load_db() {
 
 pub async fn run() {
     let (scan_tx, scan_rx) = mpsc::unbounded_channel::<()>();
-    let (batch_tx, batch_rx) = mpsc::unbounded_channel::<(Vec<EntryFromWalkdir>, usize)>();
-    let (fs_tx, fs_rx) = mpsc::unbounded_channel::<(Vec<EntryFromPathBuf>, usize)>();
-    let (index_tx, index_rx) = mpsc::unbounded_channel::<(ExistingPathRecord, usize)>();
+    let (batch_tx, batch_rx) = mpsc::unbounded_channel::<(Vec<IndexEvent>, usize)>();
+    let (content_index_tx, content_index_rx) =
+        mpsc::unbounded_channel::<(ExistingPathRecord, usize)>();
 
     let token = CancellationToken::new();
 
     let tracker = TaskTracker::new();
 
     tracker.spawn(content_indexing::start_indexing(
-        index_rx,
-        index_tx.clone(),
+        content_index_rx,
+        content_index_tx.clone(),
         token.clone(),
     ));
 
-    tracker.spawn(path_indexing::start_indexing_batches(
+    tracker.spawn(path_indexing::start_indexing(
         batch_rx,
         batch_tx.clone(),
-        index_tx.clone(),
-        token.clone(),
-    ));
-
-    tracker.spawn(path_indexing::start_indexing_batches(
-        fs_rx,
-        fs_tx.clone(),
-        index_tx,
+        content_index_tx.clone(),
         token.clone(),
     ));
 
     tracker.spawn(path_indexing::start_scanning(
         scan_rx,
-        batch_tx,
+        batch_tx.clone(),
         token.clone(),
     ));
 
-    tracker.spawn(fswatch::watch(token.clone(), fs_tx));
+    tracker.spawn(fswatch::watch(token.clone(), batch_tx));
 
     tracker.close();
 

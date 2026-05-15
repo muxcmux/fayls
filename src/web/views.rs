@@ -147,31 +147,32 @@ impl View {
     fn breadcrumbs(&self) -> Vec<PathBuf> {
         match self {
             View::Path(p) => {
-                let mut path_buf = Some(p.clone());
                 let mut parts = vec![];
-                while let Some(path) = path_buf {
-                    let is_root = config::get().app.canonicalized_sources().contains(&path);
-                    path_buf = path.parent().map(std::path::Path::to_path_buf);
+                for path in p.ancestors() {
+                    let is_root = config::get().app.canonicalized_sources().contains(path);
                     parts.push(path);
 
                     if is_root {
                         break;
                     }
                 }
-                parts.into_iter().rev().collect()
+                parts.into_iter().rev().map(PathBuf::from).collect()
             }
             View::Search => vec![PathBuf::from("/Search results")],
             View::Root => vec![],
         }
     }
 
-    fn encode(&self) -> String {
+    fn as_str(&self) -> &str {
         match self {
-            View::Path(p) => format!("/{}", URL_SAFE_NO_PAD.encode(p.to_string_lossy().as_ref())),
-            View::Search => String::new(),
-            // "/"
-            View::Root => "/Lw".into(),
+            View::Path(p) => p.to_str().unwrap_or(""),
+            View::Search => "",
+            View::Root => "/",
         }
+    }
+
+    fn encode(&self) -> String {
+        format!("/{}", URL_SAFE_NO_PAD.encode(self.as_str()))
     }
 }
 
@@ -223,8 +224,8 @@ pub fn file_list(
                 }
             }
         }
-        table hx-sse:connect={ "/sse" (folder.encode()) } hx-trigger="load delay:1s" hx-config="ws.pauseOnBackground: false" {
-            thead {
+        table hx-get={ "/files" (folder.as_str()) (&query_string) } hx-trigger="reload-file-list" hx-target="#file-list" {
+            thead hx-sse:connect={ "/sse" (folder.encode()) } hx-trigger="load delay:1s" hx-config="ws.pauseOnBackground: false" {
                 tr {
                     th { }
                     @let (sort, order) = web::get_sorting(req);

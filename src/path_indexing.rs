@@ -17,9 +17,12 @@ use tokio::{
     },
     task::JoinSet,
 };
-use walkdir::{DirEntry, WalkDir};
+use walkdir::WalkDir;
 
-use crate::{app, config};
+use crate::{
+    app, config, dir_size,
+    web::{self, Event, views::View},
+};
 
 #[derive(Clone, serde::Serialize, PartialEq)]
 pub enum PathRecordKind {
@@ -85,67 +88,8 @@ pub struct ExistingPathRecord {
     pub processed: i64,
 }
 
-pub(crate) trait Entry {
-    fn exists_on_disk(&self) -> bool;
-    fn new_record(&self) -> NewPathRecord;
-}
-
-pub struct EntryFromWalkdir(DirEntry);
-#[derive(PartialEq)]
-pub struct EntryFromPathBuf(PathBuf);
-
-impl From<PathBuf> for EntryFromPathBuf {
-    fn from(value: PathBuf) -> Self {
-        Self(value)
-    }
-}
-
-impl Entry for EntryFromWalkdir {
-    fn exists_on_disk(&self) -> bool {
-        true
-    }
-
-    fn new_record(&self) -> NewPathRecord {
-        let entry = &self.0;
-        let metadata = entry.metadata().ok();
-        let kind = if entry.file_type().is_dir() {
-            PathRecordKind::Directory
-        } else if entry.file_type().is_symlink() {
-            PathRecordKind::Symlink
-        } else {
-            PathRecordKind::File
-        };
-        let size = (if entry.file_type().is_dir() {
-            dir_size(entry.path())
-        } else {
-            metadata.as_ref().map_or(0, std::fs::Metadata::len)
-        })
-        .cast_signed();
-        let last_modified = metadata
-            .and_then(|m| m.modified().ok())
-            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-            .map(|duration| duration.as_secs().cast_signed());
-
-        NewPathRecord {
-            kind,
-            size,
-            last_modified,
-            name: entry.file_name().to_string_lossy().into_owned(),
-            parent: entry
-                .path()
-                .parent()
-                .map(|p| p.to_string_lossy().into_owned()),
-        }
-    }
-}
-
-impl Entry for EntryFromPathBuf {
-    fn exists_on_disk(&self) -> bool {
-        self.0.exists()
-    }
-
-    fn new_record(&self) -> NewPathRecord {
-        let path = &self.0;
+impl From<&PathBuf> for NewPathRecord {
+    fn from(path: &PathBuf) -> Self {
         let metadata = path.metadata().ok();
         let kind = if path.is_dir() {
             PathRecordKind::Directory
@@ -178,31 +122,40 @@ impl Entry for EntryFromPathBuf {
     }
 }
 
+impl From<&IndexEvent> for NewPathRecord {
+    fn from(value: &IndexEvent) -> Self {
+        match value {
+            IndexEvent::Update(path_buf)
+            | IndexEvent::Remove(path_buf)
+            | IndexEvent::ForceUpdate(path_buf) => path_buf.into(),
+        }
+    }
+}
+
 impl NewPathRecord {
-    pub(crate) fn path_buf(&self) -> PathBuf {
+    fn path_buf(&self) -> PathBuf {
         match &self.parent {
             Some(p) => Path::new(p).join(&self.name),
             None => PathBuf::from(&self.name),
         }
     }
 
-    async fn remove<'e, E>(&self, db: E) -> Result<(), sqlx::Error>
+    async fn remove<'e, E>(&self, db: E) -> Result<Vec<ExistingPathRecord>, sqlx::Error>
     where
         E: Executor<'e, Database = Sqlite>,
     {
-        sqlx::query(
+        sqlx::query_as::<_, ExistingPathRecord>(
             r"
             DELETE FROM paths WHERE (name = ? AND parent = ?)
             OR parent LIKE ? || '%'
+            RETURNING *
             ",
         )
         .bind(&self.name)
         .bind(&self.parent)
         .bind(self.path_buf().to_string_lossy())
-        .execute(db)
-        .await?;
-
-        Ok(())
+        .fetch_all(db)
+        .await
     }
 
     async fn find_existing<'e, E>(&self, db: E) -> Result<Option<ExistingPathRecord>, sqlx::Error>
@@ -317,36 +270,26 @@ impl ExistingPathRecord {
     }
 }
 
-fn dir_size(path: &Path) -> u64 {
-    WalkDir::new(path)
-        .min_depth(1)
-        .into_iter()
-        .filter_map(|entry| match entry {
-            Ok(entry) if entry.file_type().is_file() => Some(entry),
-            Ok(_) => None,
-            Err(error) => {
-                tracing::warn!(
-                    "failed to read directory tree entry under {}: {error}",
-                    path.display()
-                );
-                None
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub enum IndexEvent {
+    Update(PathBuf),
+    ForceUpdate(PathBuf),
+    Remove(PathBuf),
+}
+
+impl IndexEvent {
+    fn path(&self) -> &Path {
+        match self {
+            Self::Update(path_buf) | Self::ForceUpdate(path_buf) | Self::Remove(path_buf) => {
+                path_buf.as_path()
             }
-        })
-        .fold(0, |acc, entry| match entry.metadata() {
-            Ok(metadata) => acc.saturating_add(metadata.len()),
-            Err(error) => {
-                tracing::warn!(
-                    "failed to read metadata for {}: {error}",
-                    entry.path().display()
-                );
-                acc
-            }
-        })
+        }
+    }
 }
 
 pub async fn start_scanning(
     mut rx: UnboundedReceiver<()>,
-    tx: UnboundedSender<(Vec<EntryFromWalkdir>, usize)>,
+    tx: UnboundedSender<(Vec<IndexEvent>, usize)>,
     token: CancellationToken,
 ) {
     while rx.recv().await.is_some() {
@@ -360,7 +303,7 @@ pub async fn start_scanning(
     tracing::info!("scanning stopped");
 }
 
-fn scan(tx: &UnboundedSender<(Vec<EntryFromWalkdir>, usize)>, token: &CancellationToken) {
+fn scan(tx: &UnboundedSender<(Vec<IndexEvent>, usize)>, token: &CancellationToken) {
     let batch_size = config::get().indexing.batch_size;
 
     let paths = config::get().app.canonicalized_sources();
@@ -374,7 +317,7 @@ fn scan(tx: &UnboundedSender<(Vec<EntryFromWalkdir>, usize)>, token: &Cancellati
 
             match entry {
                 Ok(entry) => {
-                    batch.push(EntryFromWalkdir(entry));
+                    batch.push(IndexEvent::Update(entry.into_path()));
                     if batch.len() >= batch_size {
                         _ = tx.send((std::mem::take(&mut batch), 0));
                     }
@@ -389,9 +332,9 @@ fn scan(tx: &UnboundedSender<(Vec<EntryFromWalkdir>, usize)>, token: &Cancellati
     }
 }
 
-pub(crate) async fn start_indexing_batches<T: Entry + Send + Sync + 'static>(
-    mut batch_rx: UnboundedReceiver<(Vec<T>, usize)>,
-    batch_tx: UnboundedSender<(Vec<T>, usize)>,
+pub(crate) async fn start_indexing(
+    mut batch_rx: UnboundedReceiver<(Vec<IndexEvent>, usize)>,
+    batch_tx: UnboundedSender<(Vec<IndexEvent>, usize)>,
     index_tx: UnboundedSender<(ExistingPathRecord, usize)>,
     token: CancellationToken,
 ) {
@@ -411,7 +354,7 @@ pub(crate) async fn start_indexing_batches<T: Entry + Send + Sync + 'static>(
         let token = token.clone();
         let permit = semaphore.clone().acquire_owned().await.unwrap();
         queue.spawn(async move {
-            if let Err(err) = index_batch(&batch, index_tx, token).await {
+            if let Err(err) = index(&batch, index_tx, token).await {
                 if retry > config::get().indexing.max_retries {
                     tracing::error!("batch error: {err}, giving up");
                 } else {
@@ -427,41 +370,41 @@ pub(crate) async fn start_indexing_batches<T: Entry + Send + Sync + 'static>(
     tracing::info!("batch indexing stopped");
 }
 
-async fn index_batch<T: Entry>(
-    entries: &[T],
+async fn index(
+    events: &[IndexEvent],
     tx: UnboundedSender<(ExistingPathRecord, usize)>,
     token: CancellationToken,
 ) -> Result<()> {
-    let mut to_reindex = Vec::with_capacity(entries.len());
-    let mut to_insert = Vec::with_capacity(entries.len());
-    let mut to_update = Vec::with_capacity(entries.len());
-    let mut to_delete = Vec::with_capacity(entries.len());
+    let mut to_reindex = Vec::with_capacity(events.len());
+    let mut to_insert = Vec::with_capacity(events.len());
+    let mut to_update = Vec::with_capacity(events.len());
+    let mut to_delete = Vec::with_capacity(events.len());
 
-    for entry in entries {
+    for event in events {
         if token.is_cancelled() {
             break;
         }
 
-        if !entry.exists_on_disk() {
-            to_delete.push(entry.new_record());
+        if let IndexEvent::Remove(_) = event {
+            to_delete.push(NewPathRecord::from(event));
             continue;
         }
 
-        let new = entry.new_record();
+        let new_record = NewPathRecord::from(event);
 
-        let existing = new.find_existing(app::db()).await?;
+        let existing = new_record.find_existing(app::db()).await?;
 
         if let Some(existing) = existing {
-            if existing.is_outdated(&new) {
-                tracing::info!("reindexing: {}", &existing.path_buf().display());
-                to_update.push((existing, new.size, new.last_modified));
+            if matches!(event, IndexEvent::ForceUpdate(_)) || existing.is_outdated(&new_record) {
+                tracing::info!("reindexing: {}", event.path().display());
+                to_update.push((existing, new_record.size, new_record.last_modified));
             } else if !existing.is_processed() {
-                tracing::info!("reindexing: {}", &existing.path_buf().display());
+                tracing::info!("reindexing: {}", event.path().display());
                 to_reindex.push(existing);
             }
         } else {
-            tracing::info!("indexing: {}", new.path_buf().display());
-            to_insert.push(new);
+            tracing::info!("indexing: {}", event.path().display());
+            to_insert.push(new_record);
         }
     }
 
@@ -469,11 +412,21 @@ async fn index_batch<T: Entry>(
 
     for new in to_insert {
         let existing = new.insert(&mut *txn).await?;
+        let path = existing.path_buf();
+        if config::get().app.canonicalized_sources().contains(&path) {
+            web::broadcast(&Event::Reload(View::Root));
+        }
+        web::broadcast(&Event::Reload(View::Path(path)));
         to_reindex.push(existing);
     }
 
     for (mut existing, size, last_modified) in to_update {
         existing.touch(size, last_modified, &mut *txn).await?;
+        let path = existing.path_buf();
+        if config::get().app.canonicalized_sources().contains(&path) {
+            web::broadcast(&Event::Reload(View::Root));
+        }
+        web::broadcast(&Event::Reload(View::Path(path)));
         to_reindex.push(existing);
     }
 
@@ -482,12 +435,6 @@ async fn index_batch<T: Entry>(
     }
 
     txn.commit().await?;
-
-    // web::broadcast(web::Event::Insert(to_send_insert_events));
-    // web::broadcast(web::Event::Update(to_send_update_events));
-    // web::broadcast(web::Event::Remove(
-    //     to_send_remove_events.into_iter().flatten().collect(),
-    // ));
 
     for item in to_reindex {
         if token.is_cancelled() {

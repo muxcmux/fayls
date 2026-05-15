@@ -1,4 +1,4 @@
-mod views;
+pub(crate) mod views;
 use futures_util::StreamExt;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -302,7 +302,7 @@ static SSE_CONNECTIONS: LazyLock<SseConnections> = LazyLock::new(SseConnections:
 #[derive(Clone)]
 pub enum Event {
     Ping,
-    Refresh(View),
+    Reload(View),
     // (indexed, total)
     Progress((i64, i64)),
 }
@@ -310,10 +310,8 @@ pub enum Event {
 impl Event {
     fn into_sse_event(self) -> SseEvent {
         match self {
-            Self::Ping => SseEvent::default().name("ping"),
-            Self::Refresh(_) => SseEvent::default()
-                .name("refresh")
-                .text("pls refresh yourself"),
+            Self::Ping => SseEvent::default().name("ping").text(""),
+            Self::Reload(_) => SseEvent::default().name("reload-file-list").text(""),
             Self::Progress(progress) => SseEvent::default().text(
                 maud::html! {
                     hx-partial hx-target="#index-progress" {
@@ -328,23 +326,19 @@ impl Event {
 
 pub fn broadcast(event: &Event) {
     match SSE_CONNECTIONS.lock() {
-        Ok(mut connections) => connections.retain(|_, conns| {
-            conns.retain(|tx| tx.send(event.clone()).is_ok());
-            !conns.is_empty()
-        }),
-        Err(e) => {
-            tracing::error!(error = ?e, "broadcasting event failed");
-        }
-    }
-}
-
-pub fn broadcast_to_view(event: &Event, view: &View) {
-    match SSE_CONNECTIONS.lock() {
-        Ok(mut connections) => {
-            if let Some(conns) = connections.get_mut(view) {
-                conns.retain(|tx| tx.send(event.clone()).is_ok());
+        Ok(mut connections) => match event {
+            Event::Ping | Event::Progress(_) => {
+                connections.retain(|_, conns| {
+                    conns.retain(|tx| tx.send(event.clone()).is_ok());
+                    !conns.is_empty()
+                });
             }
-        }
+            Event::Reload(view) => {
+                if let Some(conns) = connections.get_mut(view) {
+                    conns.retain(|tx| tx.send(event.clone()).is_ok());
+                }
+            }
+        },
         Err(e) => {
             tracing::error!(error = ?e, "broadcasting event failed");
         }

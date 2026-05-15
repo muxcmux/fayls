@@ -35,6 +35,7 @@ pub struct App {
     pub sources: Vec<PathBuf>,
     pub log_level: String,
     pub tesseract_bin: String,
+    pub extractpdf_bin: String,
 }
 
 static CANONICALIZED_SOURCES: OnceLock<HashSet<PathBuf>> = OnceLock::new();

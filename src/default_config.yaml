@@ -1,5 +1,6 @@
 app:
   tesseract_bin: tesseract
+  extractpdf_bin: extractpdf
   log_level: info
 server:
   address: 127.0.0.1

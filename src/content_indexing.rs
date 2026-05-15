@@ -1,5 +1,4 @@
 use anyhow::{Result, bail};
-use pdf_oxide::PdfDocument;
 use std::{ffi::OsStr, path::Path, sync::Arc};
 use tokio::{
     process::Command,
@@ -40,7 +39,7 @@ async fn extract_image_content(file_path: &Path) -> Result<String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!(
-            "tesseract failed for {}: {}",
+            "tesseract failed for {}:\n{}",
             file_path.display(),
             stderr.trim()
         );
@@ -50,19 +49,21 @@ async fn extract_image_content(file_path: &Path) -> Result<String> {
 }
 
 async fn extract_pdf_content(file_path: &Path) -> Result<String> {
-    let p = file_path.to_path_buf();
-    tokio::task::spawn_blocking(|| {
-        let doc = PdfDocument::open(p)?;
-        let len = doc.page_count()?;
-        let mut contents = Vec::with_capacity(len);
+    let output = Command::new(&config::get().app.extractpdf_bin)
+        .arg(file_path)
+        .output()
+        .await?;
 
-        for i in 0..len {
-            contents.push(doc.extract_text(i)?);
-        }
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "extractpdf failed for {}:\n{}",
+            file_path.display(),
+            stderr.trim()
+        );
+    }
 
-        Ok(contents.join("\n"))
-    })
-    .await?
+    Ok(String::from_utf8_lossy(&output.stdout).into())
 }
 
 async fn extract_content_from_file(file_path: &Path) -> Result<String> {

@@ -11,6 +11,7 @@ use std::{
 use crate::{
     app, content_indexing,
     error::{Error, Result},
+    path_indexing::{NewPathRecord, PathRecordKind},
     web::views::View,
 };
 use salvo::{conn::tcp::TcpAcceptor, fs::NamedFile, prelude::*};
@@ -112,7 +113,7 @@ pub(crate) fn get_sorting(req: &Request) -> (Sort, Order) {
 }
 
 #[handler]
-async fn list_files_handler(req: &mut Request, res: &mut Response) -> Result {
+async fn path_handler(req: &mut Request, res: &mut Response) -> Result {
     // unwrapping here is safe because of the routes guard where
     // we handle the /files path by serving root dirs
     let path = req
@@ -123,21 +124,40 @@ async fn list_files_handler(req: &mut Request, res: &mut Response) -> Result {
     let (sort, order) = get_sorting(req);
     let items = list_entries(&[path.as_ref()], &sort, &order).await?;
 
-    let file_list = views::file_list(
-        &View::Path(PathBuf::from(path)),
-        &items,
-        content_indexing::get_progress().await?,
-        req,
-    );
+    let path = PathBuf::from(path);
 
-    res.render(Text::Html(
-        if is_hx(req) {
-            file_list
-        } else {
-            views::layout("Fayls", &file_list)
-        }
-        .into_string(),
-    ));
+    let record = NewPathRecord::from(&path)
+        .find_existing(app::db())
+        .await?
+        .ok_or_else(|| Error::NotFound)?;
+
+    if record.kind == PathRecordKind::Directory {
+        let file_list = views::file_list(
+            &View::Path(path),
+            &items,
+            content_indexing::get_progress().await?,
+            req,
+        );
+
+        res.render(Text::Html(
+            if is_hx(req) {
+                file_list
+            } else {
+                views::layout("Fayls", &file_list)
+            }
+            .into_string(),
+        ));
+    } else {
+        let file_view = views::file_view(&View::Path(path), req);
+        res.render(Text::Html(
+            if is_hx(req) {
+                file_view
+            } else {
+                views::layout("Fayls", &file_view)
+            }
+            .into_string(),
+        ));
+    }
 
     Ok(())
 }
@@ -311,7 +331,7 @@ impl Event {
     fn into_sse_event(self) -> SseEvent {
         match self {
             Self::Ping => SseEvent::default().name("ping").text(""),
-            Self::Reload(_) => SseEvent::default().name("reload-file-list").text(""),
+            Self::Reload(_) => SseEvent::default().name("reload-file-view").text(""),
             Self::Progress(progress) => SseEvent::default().text(
                 maud::html! {
                     hx-partial hx-target="#index-progress" {
@@ -359,7 +379,7 @@ pub async fn server() -> (Server<TcpAcceptor>, Router) {
         .push(
             Router::with_path("files")
                 .get(list_roots_handler)
-                .push(Router::with_path("{*path}").get(list_files_handler)),
+                .push(Router::with_path("{*path}").get(path_handler)),
         )
         .push(Router::with_path("search").get(search_handler))
         .push(

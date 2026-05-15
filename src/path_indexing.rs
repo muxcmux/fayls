@@ -158,7 +158,10 @@ impl NewPathRecord {
         .await
     }
 
-    async fn find_existing<'e, E>(&self, db: E) -> Result<Option<ExistingPathRecord>, sqlx::Error>
+    pub(crate) async fn find_existing<'e, E>(
+        &self,
+        db: E,
+    ) -> Result<Option<ExistingPathRecord>, sqlx::Error>
     where
         E: Executor<'e, Database = Sqlite>,
     {

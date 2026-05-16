@@ -75,7 +75,7 @@ enum DefaultConfigFile {
     Static,
 }
 
-const DEFAULT_CONFIG_FILES: &[&str] = &["config.yaml", "data/config.yaml"];
+const DEFAULT_CONFIG_FILES: &[&str] = &["config.yaml", "data/config.yaml", "/data/config.yaml"];
 
 impl Config {
     fn from_file(f: DefaultConfigFile) -> Result<Self, config::ConfigError> {

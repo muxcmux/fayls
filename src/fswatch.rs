@@ -9,7 +9,7 @@ use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio_util::sync::CancellationToken;
 use walkdir::WalkDir;
 
-use crate::{config, path_indexing::IndexEvent};
+use crate::{config, indexing::IndexEvent};
 
 pub(crate) async fn watch(token: CancellationToken, tx: UnboundedSender<(Vec<IndexEvent>, usize)>) {
     if let Err(e) = monitor_fs(token, tx).await {

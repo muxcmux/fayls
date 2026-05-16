@@ -1,5 +1,7 @@
 pub(crate) mod views;
+
 use futures_util::StreamExt;
+use serde::Deserialize;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use std::{
@@ -9,27 +11,20 @@ use std::{
 };
 
 use crate::{
-    app, content_indexing,
-    error::{Error, Result},
-    path_indexing::{NewPathRecord, PathRecordKind},
-    web::views::View,
+    app, config,
+    db::NewPathRecord,
+    error::{AppResult, Error},
+    web::views::Page,
 };
 use salvo::{conn::tcp::TcpAcceptor, fs::NamedFile, prelude::*};
-use serde::Deserialize;
 use tokio::sync::mpsc::{self, UnboundedSender};
-
-use crate::{
-    config,
-    path_indexing::ExistingPathRecord,
-    utils::{bind_vec, expand_vec_placeholder},
-};
 
 fn is_hx(req: &Request) -> bool {
     req.header::<bool>("hx-request").is_some_and(|v| v)
 }
 
 #[derive(Default, Deserialize, PartialEq)]
-pub enum Order {
+pub(crate) enum Order {
     #[default]
     #[serde(rename = "desc")]
     Desc,
@@ -38,7 +33,7 @@ pub enum Order {
 }
 
 #[derive(Default, Deserialize, PartialEq)]
-pub enum Sort {
+pub(crate) enum Sort {
     #[default]
     #[serde(rename = "last_modified")]
     LastModified,
@@ -49,14 +44,14 @@ pub enum Sort {
 }
 
 impl Order {
-    fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Self::Asc => "asc",
             Self::Desc => "desc",
         }
     }
 
-    fn reverse(&self) -> Self {
+    pub(crate) fn reverse(&self) -> Self {
         match self {
             Self::Desc => Self::Asc,
             Self::Asc => Self::Desc,
@@ -65,7 +60,7 @@ impl Order {
 }
 
 impl Sort {
-    fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &str {
         match self {
             Self::LastModified => "last_modified",
             Self::Name => "name",
@@ -73,37 +68,13 @@ impl Sort {
         }
     }
 
-    fn humanize(&self) -> &'static str {
+    pub(crate) fn humanize(&self) -> &str {
         match self {
             Self::LastModified => "Last Modified",
             Self::Name => "Name",
             Self::Size => "Size",
         }
     }
-}
-
-async fn list_entries(
-    paths: &[&str],
-    sort: &Sort,
-    order: &Order,
-) -> Result<Vec<ExistingPathRecord>> {
-    let sql = expand_vec_placeholder(
-        &format!(
-            r"
-            SELECT * FROM paths
-            WHERE parent IN (?)
-            ORDER BY
-                CASE WHEN kind = 'directory' THEN 0 ELSE 1 END,
-                {} {}
-            ",
-            sort.as_str(),
-            order.as_str()
-        ),
-        paths.len(),
-    );
-    let query = sqlx::query_as::<_, ExistingPathRecord>(&sql);
-
-    Ok(bind_vec(query, paths).fetch_all(app::db()).await?)
 }
 
 pub(crate) fn get_sorting(req: &Request) -> (Sort, Order) {
@@ -113,7 +84,7 @@ pub(crate) fn get_sorting(req: &Request) -> (Sort, Order) {
 }
 
 #[handler]
-async fn path_handler(req: &mut Request, res: &mut Response) -> Result {
+async fn path_handler(req: &mut Request, res: &mut Response) -> AppResult {
     // unwrapping here is safe because of the routes guard where
     // we handle the /files path by serving root dirs
     let path = req
@@ -121,72 +92,20 @@ async fn path_handler(req: &mut Request, res: &mut Response) -> Result {
         .map(|p| format!("/{p}"))
         .expect("this can't happen");
 
-    let (sort, order) = get_sorting(req);
-    let items = list_entries(&[path.as_ref()], &sort, &order).await?;
-
     let path = PathBuf::from(path);
 
-    let record = NewPathRecord::from(&path)
+    _ = NewPathRecord::from(&path)
         .find_existing(app::db())
         .await?
         .ok_or_else(|| Error::NotFound)?;
 
-    if record.kind == PathRecordKind::Directory {
-        let file_list = views::file_list(
-            &View::Path(path),
-            &items,
-            content_indexing::get_progress().await?,
-            req,
-        );
-
-        res.render(Text::Html(
-            if is_hx(req) {
-                file_list
-            } else {
-                views::layout("Fayls", &file_list)
-            }
-            .into_string(),
-        ));
-    } else {
-        let file_view = views::file_view(&View::Path(path), req);
-        res.render(Text::Html(
-            if is_hx(req) {
-                file_view
-            } else {
-                views::layout("Fayls", &file_view)
-            }
-            .into_string(),
-        ));
-    }
-
-    Ok(())
-}
-
-#[handler]
-async fn list_roots_handler(req: &Request, res: &mut Response) -> Result {
-    let roots = config::get()
-        .app
-        .canonicalized_sources()
-        .iter()
-        .filter_map(|s| s.parent().and_then(|p| p.to_str()))
-        .collect::<Vec<&str>>();
-
-    let (sort, order) = get_sorting(req);
-
-    let items = list_entries(&roots, &sort, &order).await?;
-
-    let file_list = views::file_list(
-        &View::Root,
-        &items,
-        content_indexing::get_progress().await?,
-        req,
-    );
+    let page = views::page(Page::from(&path), req).await?;
 
     res.render(Text::Html(
         if is_hx(req) {
-            file_list
+            page
         } else {
-            views::layout("Fayls", &file_list)
+            views::layout("Fayls", &page)
         }
         .into_string(),
     ));
@@ -194,84 +113,35 @@ async fn list_roots_handler(req: &Request, res: &mut Response) -> Result {
     Ok(())
 }
 
-const FILENAME_QUERY: &str = "SELECT * FROM paths WHERE name LIKE '%' || ? || '%' LIMIT 20";
+#[handler]
+async fn list_roots_handler(req: &Request, res: &mut Response) -> AppResult {
+    let page = views::page(Page::root(), req).await?;
 
-const FTS_QUERY: &str = r"
-    WITH
-    name_hits AS (
-        SELECT
-            f.*,
-            1 AS result_group,
-            NULL AS rank
-        FROM paths AS f
-        WHERE f.name LIKE '%' || ?1 || '%'
-    ),
-
-    fts_hits AS (
-        SELECT
-            f.*,
-            2 AS result_group,
-            bm25(content_index, 10.0, 5.0) AS rank
-        FROM content_index
-        JOIN paths AS f
-          ON f.id = content_index.rowid
-        WHERE content_index MATCH ?1
-          AND f.id NOT IN (SELECT id FROM name_hits)
-    )
-
-    SELECT *
-    FROM (
-        SELECT * FROM name_hits
-        UNION ALL
-        SELECT * FROM fts_hits
-    )
-    ORDER BY
-        result_group ASC,
-        rank ASC
-    LIMIT 20
-";
-
-async fn is_valid_fts(query: &str) -> bool {
-    match sqlx::query("SELECT content FROM fts_query_validator WHERE content MATCH ?")
-        .bind(query)
-        .fetch_optional(app::db())
-        .await
-    {
-        Ok(_) => true,
-        Err(e) => {
-            tracing::warn!("bad fts query: {e}");
-            false
+    res.render(Text::Html(
+        if is_hx(req) {
+            page
+        } else {
+            views::layout("Fayls", &page)
         }
-    }
+        .into_string(),
+    ));
+
+    Ok(())
 }
 
 #[handler]
-async fn search_handler(req: &mut Request, res: &mut Response) -> Result {
-    let query = req
+async fn search_handler(req: &mut Request, res: &mut Response) -> AppResult {
+    let term = req
         .query::<&str>("q")
         .ok_or(Error::BadRequest("no query param"))?;
 
-    let items = sqlx::query_as::<_, ExistingPathRecord>(if is_valid_fts(query).await {
-        FTS_QUERY
-    } else {
-        FILENAME_QUERY
-    })
-    .bind(query)
-    .fetch_all(app::db())
-    .await?;
-
-    let file_list = views::file_list(
-        &View::Search,
-        &items,
-        content_indexing::get_progress().await?,
-        req,
-    );
+    let page = views::page(Page::search(term), req).await?;
 
     res.render(Text::Html(
         if is_hx(req) {
-            file_list
+            page
         } else {
-            views::layout(&format!("Results for {query}"), &file_list)
+            views::layout("Fayls", &page)
         }
         .into_string(),
     ));
@@ -280,7 +150,7 @@ async fn search_handler(req: &mut Request, res: &mut Response) -> Result {
 }
 
 #[handler]
-async fn serve_static_file(req: &mut Request, res: &mut Response) -> Result {
+async fn serve_static_file(req: &mut Request, res: &mut Response) -> AppResult {
     let file = req.param::<&str>("file").ok_or(Error::NotFound)?;
 
     NamedFile::builder(file).send(req.headers(), res).await;
@@ -289,8 +159,8 @@ async fn serve_static_file(req: &mut Request, res: &mut Response) -> Result {
 }
 
 #[handler]
-async fn sse_connected(req: &Request, res: &mut Response) -> Result {
-    let view = req.param::<View>("view").unwrap_or(View::Search);
+async fn sse_connected(req: &Request, res: &mut Response) -> AppResult {
+    let view = req.param::<Page>("view").unwrap_or(Page::search(""));
 
     let (tx, rx) = mpsc::unbounded_channel::<Event>();
     let rx = UnboundedReceiverStream::new(rx);
@@ -316,13 +186,13 @@ async fn sse_connected(req: &Request, res: &mut Response) -> Result {
     Ok(())
 }
 
-type SseConnections = Mutex<HashMap<View, Vec<UnboundedSender<Event>>>>;
+type SseConnections = Mutex<HashMap<Page, Vec<UnboundedSender<Event>>>>;
 static SSE_CONNECTIONS: LazyLock<SseConnections> = LazyLock::new(SseConnections::default);
 
 #[derive(Clone)]
-pub enum Event {
+enum Event {
     Ping,
-    Reload(View),
+    Reload(Page),
     // (indexed, total)
     Progress((i64, i64)),
 }
@@ -331,7 +201,7 @@ impl Event {
     fn into_sse_event(self) -> SseEvent {
         match self {
             Self::Ping => SseEvent::default().name("ping").text(""),
-            Self::Reload(_) => SseEvent::default().name("reload-file-view").text(""),
+            Self::Reload(_) => SseEvent::default().name("reload-view").text(""),
             Self::Progress(progress) => SseEvent::default().text(
                 maud::html! {
                     hx-partial hx-target="#index-progress" {
@@ -344,7 +214,15 @@ impl Event {
     }
 }
 
-pub fn broadcast(event: &Event) {
+pub(crate) fn reload(page: Page) {
+    broadcast(&Event::Reload(page));
+}
+
+pub(crate) fn report_indexing_progress(progress: (i64, i64)) {
+    broadcast(&Event::Progress(progress));
+}
+
+fn broadcast(event: &Event) {
     match SSE_CONNECTIONS.lock() {
         Ok(mut connections) => match event {
             Event::Ping | Event::Progress(_) => {

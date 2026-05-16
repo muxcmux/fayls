@@ -1,15 +1,124 @@
-use crate::config;
-use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf};
+use crate::{
+    config, db,
+    error::AppResult,
+    indexing::get_progress,
+    web::{Order, Sort, get_sorting},
+};
+use std::{
+    ffi::OsString,
+    os::unix::ffi::OsStringExt,
+    path::{Path, PathBuf},
+};
 
 use base64_turbo::URL_SAFE_NO_PAD;
 use maud::{DOCTYPE, Markup, html};
 use multimap::MultiMap;
 use salvo::Request;
 
-use crate::{
-    path_indexing::{ExistingPathRecord, PathRecordKind},
-    web::{self, Order, Sort},
-};
+use crate::db::{ExistingPathRecord, PathRecordKind};
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum View {
+    Root,
+    Dir(PathBuf),
+    File(PathBuf),
+    Search(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct Page {
+    view: View,
+}
+
+impl Page {
+    pub(crate) fn search(term: &str) -> Self {
+        Self {
+            view: View::Search(term.to_string()),
+        }
+    }
+
+    pub(crate) fn root() -> Self {
+        Self { view: View::Root }
+    }
+}
+
+impl<T: AsRef<Path>> From<T> for Page {
+    fn from(value: T) -> Self {
+        let path = value.as_ref();
+
+        if path.as_os_str().is_empty() {
+            return Self::search("");
+        }
+
+        if path == "/" {
+            return Self { view: View::Root };
+        }
+
+        if path.is_dir() {
+            Self {
+                view: View::Dir(path.to_path_buf()),
+            }
+        } else {
+            // just treating everything else as a file
+            Self {
+                view: View::File(path.to_path_buf()),
+            }
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Page {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let encoded = String::deserialize(deserializer)?;
+
+        if encoded.is_empty() {
+            return Ok(Self::search(""));
+        }
+
+        let decoded = URL_SAFE_NO_PAD
+            .decode(encoded)
+            .map_err(serde::de::Error::custom)?;
+
+        let path = PathBuf::from(OsString::from_vec(decoded));
+        Ok(Self::from(path))
+    }
+}
+
+impl View {
+    fn breadcrumbs(&self) -> Vec<PathBuf> {
+        match self {
+            View::Dir(p) | View::File(p) => {
+                let mut parts = vec![];
+                for path in p.ancestors() {
+                    let is_root = config::get().app.canonicalized_sources().contains(path);
+                    parts.push(path);
+
+                    if is_root {
+                        break;
+                    }
+                }
+                parts.into_iter().rev().map(PathBuf::from).collect()
+            }
+            View::Search(_) => vec![PathBuf::from("/Search results")],
+            View::Root => vec![PathBuf::from("/")],
+        }
+    }
+
+    fn as_str(&self) -> &str {
+        match self {
+            View::Dir(p) | View::File(p) => p.to_str().unwrap_or(""),
+            View::Search(_) => "",
+            View::Root => "/",
+        }
+    }
+
+    fn encode(&self) -> String {
+        format!("/{}", URL_SAFE_NO_PAD.encode(self.as_str()))
+    }
+}
 
 const BYTE_UNITS: &[&str] = &["bytes", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB"];
 const STEP: f64 = 1024.0;
@@ -43,7 +152,7 @@ fn queries_to_string(queries: &MultiMap<String, String>) -> String {
     format!("?{}", ser.finish())
 }
 
-pub fn layout(title: &str, file_view: &Markup) -> Markup {
+pub(crate) fn layout(title: &str, file_view: &Markup) -> Markup {
     html! {
         (DOCTYPE)
         html {
@@ -61,16 +170,46 @@ pub fn layout(title: &str, file_view: &Markup) -> Markup {
             }
             body {
                 main x-data="{ search_q: new URLSearchParams(location.search).get('q') }" {
-                    form hx-get="/search" hx-push-url="true" hx-target="#file-view" {
+                    form hx-get="/search" hx-push-url="true" hx-target="#view" {
                         input type="search" x-model="search_q" name="q" placeholder="Search...";
                     }
-                    section #file-view {
+                    section #view {
                         { (file_view) }
                     }
                 }
             }
         }
     }
+}
+
+pub(crate) async fn page(page: Page, req: &Request) -> AppResult<Markup> {
+    Ok(match &page.view {
+        View::Root => {
+            let (sort, order) = get_sorting(req);
+
+            let roots = config::get()
+                .app
+                .canonicalized_sources()
+                .iter()
+                .filter_map(|s| s.parent().and_then(|p| p.to_str()))
+                .collect::<Vec<&str>>();
+
+            let items = db::list_paths(&roots, &sort, &order).await?;
+
+            file_list(&page.view, &items, get_progress().await?, req)
+        }
+        View::Dir(path_buf) => {
+            let (sort, order) = get_sorting(req);
+            let items = db::list_paths(&[&path_buf.to_string_lossy()], &sort, &order).await?;
+            file_list(&page.view, &items, get_progress().await?, req)
+        }
+        View::File(_) => file_view(&page.view, req),
+        View::Search(term) => {
+            let items = db::search(term).await?;
+
+            file_list(&page.view, &items, get_progress().await?, req)
+        }
+    })
 }
 
 fn file_list_header(col: &Sort, sort: &Sort, order: &Order, req: &Request) -> Markup {
@@ -88,7 +227,7 @@ fn file_list_header(col: &Sort, sort: &Sort, order: &Order, req: &Request) -> Ma
     };
 
     html! {
-        th.(col.as_str()).asc[asc].desc[desc] hx-push-url="true" hx-target="#file-view" hx-get=(queries_to_string(&queries)) {
+        th.(col.as_str()).asc[asc].desc[desc] hx-push-url="true" hx-target="#view" hx-get=(queries_to_string(&queries)) {
             svg viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg" {
                 path d="M49.0131 36L30.9126 36C29.0861 36 28.1713 33.7916 29.4629 32.5L38.1067 23.8562C39.1319 22.831 40.7939 22.831 41.819 23.8562L50.4629 32.5C51.7545 33.7916 50.8397 36 49.0131 36Z" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="asc" {}
                 path d="M49.0131 44L30.9126 44C29.0861 44 28.1713 46.2084 29.4629 47.5L38.1067 56.1438C39.1319 57.169 40.7939 57.169 41.819 56.1438L50.4629 47.5C51.7545 46.2084 50.8397 44 49.0131 44Z" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="desc" {}
@@ -111,71 +250,6 @@ fn file_row_class(record: &ExistingPathRecord) -> String {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum View {
-    Root,
-    Path(PathBuf),
-    Search,
-}
-
-impl<'de> serde::Deserialize<'de> for View {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let encoded = String::deserialize(deserializer)?;
-
-        if encoded.is_empty() {
-            return Ok(View::Search);
-        }
-
-        let decoded = URL_SAFE_NO_PAD
-            .decode(encoded)
-            .map_err(serde::de::Error::custom)?;
-
-        let path = PathBuf::from(OsString::from_vec(decoded));
-
-        if path == *"/" {
-            Ok(View::Root)
-        } else {
-            Ok(View::Path(path))
-        }
-    }
-}
-
-impl View {
-    fn breadcrumbs(&self) -> Vec<PathBuf> {
-        match self {
-            View::Path(p) => {
-                let mut parts = vec![];
-                for path in p.ancestors() {
-                    let is_root = config::get().app.canonicalized_sources().contains(path);
-                    parts.push(path);
-
-                    if is_root {
-                        break;
-                    }
-                }
-                parts.into_iter().rev().map(PathBuf::from).collect()
-            }
-            View::Search => vec![PathBuf::from("/Search results")],
-            View::Root => vec![],
-        }
-    }
-
-    fn as_str(&self) -> &str {
-        match self {
-            View::Path(p) => p.to_str().unwrap_or(""),
-            View::Search => "",
-            View::Root => "/",
-        }
-    }
-
-    fn encode(&self) -> String {
-        format!("/{}", URL_SAFE_NO_PAD.encode(self.as_str()))
-    }
-}
-
 fn breadcrumbs(view: &View, query_string: &str) -> Markup {
     let crumbs = view.breadcrumbs();
 
@@ -184,7 +258,7 @@ fn breadcrumbs(view: &View, query_string: &str) -> Markup {
             nav {
                 ul {
                     li {
-                        a href={ "/" (query_string) } x-on:click="search_q = ''" hx-get={ "/" (query_string) } hx-target="#file-view" hx-push-url="true" {
+                        a href={ "/" (query_string) } x-on:click="search_q = ''" hx-get={ "/" (query_string) } hx-target="#view" hx-push-url="true" {
                             svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" {
                                 path d="M8.354 1.146a.5.5 0 0 0-.708 0l-6 6A.5.5 0 0 0 1.5 7.5v7a.5.5 0 0 0 .5.5h4.5a.5.5 0 0 0 .5-.5v-4h2v4a.5.5 0 0 0 .5.5H14a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.146-.354L13 5.793V2.5a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5v1.293zM2.5 14V7.707l5.5-5.5 5.5 5.5V14H10v-4a.5.5 0 0 0-.5-.5h-3a.5.5 0 0 0-.5.5v4z" {}
                             }
@@ -193,7 +267,7 @@ fn breadcrumbs(view: &View, query_string: &str) -> Markup {
                     @for path in crumbs {
                         @let link = format!("/files{}{}", path.to_string_lossy(), query_string);
                         li {
-                            a href=(link) hx-get=(link) hx-target="#file-view" hx-push-url="true" {
+                            a href=(link) hx-get=(link) hx-target="#view" hx-push-url="true" {
                                 (path.file_name().map_or(String::new(), |f| f.to_string_lossy().to_string()))
                             }
                         }
@@ -204,13 +278,13 @@ fn breadcrumbs(view: &View, query_string: &str) -> Markup {
     }
 }
 
-pub fn file_list(
-    folder: &View,
+fn file_list(
+    view: &View,
     files: &[ExistingPathRecord],
     progress: (i64, i64),
     req: &Request,
 ) -> Markup {
-    let show_full_paths = folder == &View::Search;
+    let show_full_paths = matches!(view, &View::Search(_));
 
     let mut queries_without_search_param = req.queries().clone();
     queries_without_search_param.remove("q");
@@ -230,13 +304,13 @@ pub fn file_list(
     }
 
     html! {
-        (breadcrumbs(folder, &query_string))
+        (breadcrumbs(view, &query_string))
 
-        table hx-get={ "/files" (folder.as_str()) (&query_string) } hx-trigger="reload-file-view" hx-target="#file-view" {
-            thead hx-sse:connect={ "/sse" (folder.encode()) } hx-trigger="load delay:1s" hx-config="ws.pauseOnBackground: false" {
+        table hx-get={ "/files" (view.as_str()) (&query_string) } hx-trigger="reload-view" hx-target="#view" {
+            thead hx-sse:connect={ "/sse" (view.encode()) } hx-trigger="load delay:1s" hx-config="ws.pauseOnBackground: false" {
                 tr {
                     th { }
-                    @let (sort, order) = web::get_sorting(req);
+                    @let (sort, order) = get_sorting(req);
                     (file_list_header(&Sort::Name, &sort, &order, req))
                     (file_list_header(&Sort::Size, &sort, &order, req))
                     (file_list_header(&Sort::LastModified, &sort, &order, req))
@@ -251,7 +325,7 @@ pub fn file_list(
                 } @else {
                     @for file in files {
                         @let link = format!("/files{}/{}{}", file.parent.as_ref().unwrap_or(&String::new()), file.name, &query_string);
-                        tr x-on:click="search_q = ''" hx-get=(link) hx-target="#file-view" hx-push-url="true" {
+                        tr x-on:click="search_q = ''" hx-get=(link) hx-target="#view" hx-push-url="true" {
                             (row(file, show_full_paths))
                         }
                     }
@@ -279,7 +353,7 @@ pub fn file_list(
     }
 }
 
-pub fn row(record: &ExistingPathRecord, show_full_paths: bool) -> Markup {
+fn row(record: &ExistingPathRecord, show_full_paths: bool) -> Markup {
     html! {
         td.icon { i.(file_row_class(record)) {} }
         td.name {
@@ -298,7 +372,7 @@ pub fn row(record: &ExistingPathRecord, show_full_paths: bool) -> Markup {
     }
 }
 
-pub fn index_progress((processed, total): (i64, i64)) -> Markup {
+pub(crate) fn index_progress((processed, total): (i64, i64)) -> Markup {
     if processed == total {
         return Markup::default();
     }
@@ -308,7 +382,7 @@ pub fn index_progress((processed, total): (i64, i64)) -> Markup {
     }
 }
 
-pub fn file_view(view: &View, req: &Request) -> Markup {
+fn file_view(view: &View, req: &Request) -> Markup {
     let mut queries_without_search_param = req.queries().clone();
     queries_without_search_param.remove("q");
     let query_string = queries_to_string(&queries_without_search_param);

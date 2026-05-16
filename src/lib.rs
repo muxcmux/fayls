@@ -1,11 +1,10 @@
 pub mod app;
 pub mod config;
-pub mod content_indexing;
-pub mod error;
-pub mod fswatch;
-pub mod path_indexing;
-pub mod utils;
-pub mod web;
+pub(crate) mod db;
+pub(crate) mod error;
+pub(crate) mod fswatch;
+pub(crate) mod indexing;
+pub(crate) mod web;
 
 use std::path::Path;
 use walkdir::WalkDir;

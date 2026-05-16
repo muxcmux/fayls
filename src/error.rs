@@ -5,7 +5,7 @@ use serde::Serialize;
 /// anyhow and sqlx errors and can be converted into
 /// a salvo response
 #[derive(thiserror::Error, Debug)]
-pub enum Error {
+pub(crate) enum Error {
     /// Use for 401 responses
     #[error("Authentication required")]
     Unauthorized,
@@ -58,7 +58,7 @@ impl Error {
 }
 
 impl Serialize for Error {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> AppResult<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -85,7 +85,7 @@ impl Serialize for Error {
     }
 }
 
-pub type Result<T = (), E = Error> = std::result::Result<T, E>;
+pub type AppResult<T = (), E = Error> = std::result::Result<T, E>;
 
 #[async_trait]
 impl Writer for Error {

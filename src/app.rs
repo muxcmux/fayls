@@ -1,6 +1,8 @@
 use crate::{
-    config, content_indexing, fswatch,
-    path_indexing::{self, ExistingPathRecord, IndexEvent},
+    config,
+    db::ExistingPathRecord,
+    fswatch,
+    indexing::{self, IndexEvent},
     web,
 };
 use std::{sync::OnceLock, time::Duration};
@@ -63,20 +65,20 @@ pub async fn run() {
 
     let tracker = TaskTracker::new();
 
-    tracker.spawn(content_indexing::start_indexing(
+    tracker.spawn(indexing::start_indexing_contents(
         content_index_rx,
         content_index_tx.clone(),
         token.clone(),
     ));
 
-    tracker.spawn(path_indexing::start_indexing(
+    tracker.spawn(indexing::start_indexing(
         batch_rx,
         batch_tx.clone(),
         content_index_tx.clone(),
         token.clone(),
     ));
 
-    tracker.spawn(path_indexing::start_scanning(
+    tracker.spawn(indexing::start_scanning(
         scan_rx,
         batch_tx.clone(),
         token.clone(),

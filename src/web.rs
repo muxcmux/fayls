@@ -23,6 +23,11 @@ fn is_hx(req: &Request) -> bool {
     req.header::<bool>("hx-request").is_some_and(|v| v)
 }
 
+fn history_restore_requested(req: &Request) -> bool {
+    req.header::<bool>("hx-history-restore-request")
+        .is_some_and(|v| v)
+}
+
 #[derive(Default, Deserialize, PartialEq)]
 pub(crate) enum Order {
     #[default]
@@ -105,7 +110,7 @@ async fn path_handler(req: &mut Request, res: &mut Response) -> AppResult {
         if is_hx(req) {
             page
         } else {
-            views::layout("Fayls", &page)
+            views::layout("Fayls", history_restore_requested(req), &page)
         }
         .into_string(),
     ));
@@ -121,7 +126,7 @@ async fn list_roots_handler(req: &Request, res: &mut Response) -> AppResult {
         if is_hx(req) {
             page
         } else {
-            views::layout("Fayls", &page)
+            views::layout("Fayls", history_restore_requested(req), &page)
         }
         .into_string(),
     ));
@@ -141,7 +146,7 @@ async fn search_handler(req: &mut Request, res: &mut Response) -> AppResult {
         if is_hx(req) {
             page
         } else {
-            views::layout("Fayls", &page)
+            views::layout("Fayls", history_restore_requested(req), &page)
         }
         .into_string(),
     ));

@@ -11,7 +11,7 @@ use std::{
 };
 
 use base64_turbo::URL_SAFE_NO_PAD;
-use maud::{DOCTYPE, Markup, html};
+use maud::{DOCTYPE, Markup, PreEscaped, html};
 use multimap::MultiMap;
 use salvo::Request;
 
@@ -152,7 +152,7 @@ fn queries_to_string(queries: &MultiMap<String, String>) -> String {
     format!("?{}", ser.finish())
 }
 
-pub(crate) fn layout(title: &str, file_view: &Markup) -> Markup {
+pub(crate) fn layout(title: &str, restore_from_history: bool, file_view: &Markup) -> Markup {
     html! {
         (DOCTYPE)
         html {
@@ -175,6 +175,9 @@ pub(crate) fn layout(title: &str, file_view: &Markup) -> Markup {
                     }
                     section #view {
                         { (file_view) }
+                        @if restore_from_history {
+                            script { (PreEscaped("setTimeout(() => { htmx.process(document.body) }, 10)")) }
+                        }
                     }
                 }
             }

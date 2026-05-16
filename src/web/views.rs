@@ -1,6 +1,7 @@
 use crate::{
-    config, db,
-    error::AppResult,
+    app, config,
+    db::{self, NewPathRecord},
+    error::{AppResult, Error},
     indexing::get_progress,
     web::{Order, Sort, get_sorting},
 };
@@ -152,7 +153,7 @@ fn queries_to_string(queries: &MultiMap<String, String>) -> String {
     format!("?{}", ser.finish())
 }
 
-pub(crate) fn layout(title: &str, restore_from_history: bool, file_view: &Markup) -> Markup {
+pub(crate) fn layout(title: &str, restore_from_history: bool, view: &Markup) -> Markup {
     html! {
         (DOCTYPE)
         html {
@@ -174,7 +175,7 @@ pub(crate) fn layout(title: &str, restore_from_history: bool, file_view: &Markup
                         input type="search" x-model="search_q" name="q" placeholder="Search...";
                     }
                     section #view {
-                        { (file_view) }
+                        { (view) }
                         @if restore_from_history {
                             script { (PreEscaped("setTimeout(() => { htmx.process(document.body) }, 10)")) }
                         }
@@ -206,7 +207,7 @@ pub(crate) async fn page(page: Page, req: &Request) -> AppResult<Markup> {
             let items = db::list_paths(&[&path_buf.to_string_lossy()], &sort, &order).await?;
             file_list(&page.view, &items, get_progress().await?, req)
         }
-        View::File(_) => file_view(&page.view, req),
+        View::File(path_buf) => file_view(&page.view, path_buf, req).await?,
         View::Search(term) => {
             let items = db::search(term).await?;
 
@@ -356,7 +357,7 @@ fn file_list(
 
 fn row(record: &ExistingPathRecord, link: &str, show_full_paths: bool) -> Markup {
     html! {
-        tr.(file_row_class(record)) x-on:click="search_q = ''" hx-get=(link) hx-target="#view" hx-push-url="true" {
+        tr.(file_row_class(record)) x-on:click="search_q = ''" hx-get=(link) hx-target="#view" hx-swap="innerHTML show:top" hx-push-url="true" {
             td.icon { i {} }
             td.name {
                 span {
@@ -385,14 +386,51 @@ pub(crate) fn index_progress((processed, total): (i64, i64)) -> Markup {
     }
 }
 
-fn file_view(view: &View, req: &Request) -> Markup {
+async fn file_view(view: &View, file_path: &Path, req: &Request) -> AppResult<Markup> {
     let mut queries_without_search_param = req.queries().clone();
     queries_without_search_param.remove("q");
     let query_string = queries_to_string(&queries_without_search_param);
-    html! {
+
+    NewPathRecord::from(file_path)
+        .find_existing(app::db())
+        .await?
+        .ok_or_else(|| Error::NotFound)?;
+
+    Ok(html! {
         (breadcrumbs(view, &query_string))
-        section #file-contents {
-            "We display the contents of the file here."
+        section #file-contents { (read_file(file_path).await? ) }
+    })
+}
+
+async fn read_file(file_path: &Path) -> AppResult<Markup> {
+    let f = file_path.to_string_lossy();
+    let ext = file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("attempt to read as utf8");
+
+    let markup = match ext {
+        "png" | "jpeg" | "jpg" | "gif" | "webp" => {
+            html! {
+                img src={ "/read?path=" (f) };
+            }
         }
-    }
+        "pdf" => {
+            html! {
+                iframe width="100%" height="100%" src={ "/read?path=" (f) } {}
+            }
+        }
+        _ => {
+            let contents = tokio::fs::read_to_string(file_path)
+                .await
+                .map_err(|_| anyhow::anyhow!("can't read file"))?;
+            html! {
+                pre {
+                    code { (contents) }
+                }
+            }
+        }
+    };
+
+    Ok(markup)
 }

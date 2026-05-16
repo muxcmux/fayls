@@ -105,8 +105,9 @@ pub(crate) struct ExistingPathRecord {
     pub(crate) processed: i64,
 }
 
-impl From<&PathBuf> for NewPathRecord {
-    fn from(path: &PathBuf) -> Self {
+impl<T: AsRef<Path>> From<T> for NewPathRecord {
+    fn from(path: T) -> Self {
+        let path = path.as_ref();
         let metadata = path.metadata().ok();
         let kind = if path.is_dir() {
             PathRecordKind::Directory
@@ -116,7 +117,7 @@ impl From<&PathBuf> for NewPathRecord {
             PathRecordKind::File
         };
         let size = (if path.is_dir() {
-            dir_size(path.as_path())
+            dir_size(path)
         } else {
             metadata.as_ref().map_or(0, std::fs::Metadata::len)
         })

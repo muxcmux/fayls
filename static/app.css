@@ -12,11 +12,28 @@
   }
 }
 
+pre {
+  font-size: 13px;
+}
+
 body > main {
   min-height: 100dvh;
   display: flex;
   padding-bottom: 0;
   flex-direction: column;
+}
+
+#file-contents {
+  flex-grow: 1;
+  position: relative;
+
+  iframe {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    right: 0;
+  }
 }
 
 #view {
@@ -306,19 +323,15 @@ body > main {
 
           padding-left: calc(var(--pico-nav-link-spacing-horizontal) + var(--ribbon-angle));
           padding-right: calc(var(--pico-nav-link-spacing-horizontal) + var(--ribbon-angle));
-          background-color: color-mix(in oklab, var(--pico-form-element-background-color), black 2%);
+          background-color: var(--pico-code-background-color);
           border-radius: 0;
           clip-path: polygon(calc(100% - var(--ribbon-angle)) 0, 100% 50%, calc(100% - var(--ribbon-angle)) 100%, 0% 100%, var(--ribbon-angle) 50%, 0% 0%);
 
-          @media (prefers-color-scheme: dark) {
-            background-color: var(--pico-form-element-background-color);
-          }
-
           &:hover {
-            background-color: color-mix(in oklab, var(--pico-form-element-background-color), black 4%);
+            background-color: color-mix(in oklab, var(--pico-code-background-color), black 4%);
 
             @media (prefers-color-scheme: dark) {
-              background-color: color-mix(in oklab, var(--pico-form-element-background-color), white 4%);
+              background-color: color-mix(in oklab, var(--pico-code-background-color), white 4%);
             }
           }
         }

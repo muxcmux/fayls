@@ -99,11 +99,6 @@ async fn path_handler(req: &mut Request, res: &mut Response) -> AppResult {
 
     let path = PathBuf::from(path);
 
-    _ = NewPathRecord::from(&path)
-        .find_existing(app::db())
-        .await?
-        .ok_or_else(|| Error::NotFound)?;
-
     let page = views::page(Page::from(&path), req).await?;
 
     res.render(Text::Html(
@@ -155,6 +150,25 @@ async fn search_handler(req: &mut Request, res: &mut Response) -> AppResult {
 }
 
 #[handler]
+async fn read_handler(req: &mut Request, res: &mut Response) -> AppResult {
+    let path = req
+        .query::<&str>("path")
+        .ok_or(Error::BadRequest("no path param"))?;
+
+    _ = NewPathRecord::from(path)
+        .find_existing(app::db())
+        .await?
+        .ok_or_else(|| Error::NotFound)?;
+
+    NamedFile::builder(path)
+        .disposition_type("inline")
+        .send(req.headers(), res)
+        .await;
+
+    Ok(())
+}
+
+#[handler]
 async fn serve_static_file(req: &mut Request, res: &mut Response) -> AppResult {
     let file = req.param::<&str>("file").ok_or(Error::NotFound)?;
 
@@ -165,7 +179,7 @@ async fn serve_static_file(req: &mut Request, res: &mut Response) -> AppResult {
 
 #[handler]
 async fn sse_connected(req: &Request, res: &mut Response) -> AppResult {
-    let view = req.param::<Page>("view").unwrap_or(Page::search(""));
+    let view = req.param::<Page>("page").unwrap_or(Page::search(""));
 
     let (tx, rx) = mpsc::unbounded_channel::<Event>();
     let rx = UnboundedReceiverStream::new(rx);
@@ -265,10 +279,11 @@ pub async fn server() -> (Server<TcpAcceptor>, Router) {
                 .push(Router::with_path("{*path}").get(path_handler)),
         )
         .push(Router::with_path("search").get(search_handler))
+        .push(Router::with_path("read").get(read_handler))
         .push(
             Router::with_path("sse")
                 .get(sse_connected)
-                .push(Router::with_path("{*view}").get(sse_connected)),
+                .push(Router::with_path("{*page}").get(sse_connected)),
         )
         // always needs to be last
         .push(Router::with_path("{*file}").get(serve_static_file));

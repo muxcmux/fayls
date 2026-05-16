@@ -325,9 +325,7 @@ fn file_list(
                 } @else {
                     @for file in files {
                         @let link = format!("/files{}/{}{}", file.parent.as_ref().unwrap_or(&String::new()), file.name, &query_string);
-                        tr x-on:click="search_q = ''" hx-get=(link) hx-target="#view" hx-push-url="true" {
-                            (row(file, show_full_paths))
-                        }
+                        (row(file, &link, show_full_paths))
                     }
                 }
             }
@@ -353,21 +351,23 @@ fn file_list(
     }
 }
 
-fn row(record: &ExistingPathRecord, show_full_paths: bool) -> Markup {
+fn row(record: &ExistingPathRecord, link: &str, show_full_paths: bool) -> Markup {
     html! {
-        td.icon { i.(file_row_class(record)) {} }
-        td.name {
-            span {
-                (record.name)
-                @if show_full_paths {
-                    em { (record.parent.as_deref().unwrap_or("")) }
+        tr.(file_row_class(record)) x-on:click="search_q = ''" hx-get=(link) hx-target="#view" hx-push-url="true" {
+            td.icon { i {} }
+            td.name {
+                span {
+                    (record.name)
+                    @if show_full_paths {
+                        em { (record.parent.as_deref().unwrap_or("")) }
+                    }
                 }
             }
-        }
-        td.size { (format_size(record.size)) }
-        td.last_modified {
-            @let lastmod = record.last_modified.map_or(String::new(), |lm| lm.to_string());
-            time x-data={ "{ time: timeAgo(" (lastmod) ") }" } x-text="time" datetime=(lastmod) { (lastmod) }
+            td.size { (format_size(record.size)) }
+            td.last_modified {
+                @let lastmod = record.last_modified.map_or(String::new(), |lm| lm.to_string());
+                time x-data={ "{ time: timeAgo(" (lastmod) ") }" } x-text="time" datetime=(lastmod) { (lastmod) }
+            }
         }
     }
 }

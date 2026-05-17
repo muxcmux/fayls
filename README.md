@@ -34,7 +34,7 @@ $: docker run -p 8080:8080 \
               -v .:/fayls/data
               -v /full/path/to/your/Documents:/Documents
               -v /path/to/your/some_dir:/some_dir
-              fayls
+              ghcr.io/muxcmux/fayls:latest
 ```
 
 Mount every corresponding entry in `sources` as a volume, and also the current directory to

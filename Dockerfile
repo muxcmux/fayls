@@ -13,7 +13,7 @@ RUN apk add --no-cache sqlite \
 
 COPY --from=builder /usr/local/cargo/bin/fayls /usr/local/bin/fayls
 COPY --from=builder /usr/local/cargo/bin/extractpdf /usr/local/bin/extractpdf
-COPY --from=builder /usr/src/fayls/public /fayls/public
+COPY ./static /fayls/static
 
 CMD ["fayls"]
 

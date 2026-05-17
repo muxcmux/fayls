@@ -32,13 +32,13 @@ Since we are running with docker, `sources` here will just be paths the docker i
 $: docker run -p 8080:8080 \
               -u 1000:1000 \
               -v .:/fayls/data
-              -v /full/path/to/your/Downloads:/Downloads
+              -v /full/path/to/your/Documents:/Documents
               -v /path/to/your/some_dir:/some_dir
               fayls
 ```
 
 Mount every corresponding entry in `sources` as a volume, and also the current directory to
-`/fayls/data`: this is where fayls looks for the default config and will create it's database.
+`/fayls/data`: this is where fayls looks for the default config and will create its database.
 
 That's it. Now go to http://localhost:8080 and browse.
 

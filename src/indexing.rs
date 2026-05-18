@@ -1,4 +1,5 @@
 use anyhow::{Result, bail};
+use futures_util::StreamExt;
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
@@ -49,13 +50,41 @@ pub(crate) async fn start_scanning(
             break;
         }
 
-        scan(&tx, &token);
+        if let Err(e) = scan_existing().await {
+            tracing::error!(error = ?e, "error scanning existing");
+        }
+
+        scan_fs(&tx, &token);
     }
 
     tracing::info!("scanning stopped");
 }
 
-fn scan(tx: &UnboundedSender<(Vec<IndexEvent>, usize)>, token: &CancellationToken) {
+async fn scan_existing() -> Result<(), sqlx::Error> {
+    let mut all = sqlx::query_as::<_, ExistingPathRecord>("SELECT * FROM paths").fetch(app::db());
+
+    let mut txn = app::db().begin().await?;
+
+    while let Some(Ok(record)) = all.next().await {
+        if record.path_buf().exists() {
+            continue;
+        }
+
+        record.remove(&mut *txn).await?;
+        let path = record.path_buf();
+        tracing::info!("removing deleted file: {:?}", &path);
+        web::reload(Page::from(&path));
+        if config::get().app.canonicalized_sources().contains(&path) {
+            web::reload(Page::root());
+        }
+    }
+
+    txn.commit().await?;
+
+    Ok(())
+}
+
+fn scan_fs(tx: &UnboundedSender<(Vec<IndexEvent>, usize)>, token: &CancellationToken) {
     let batch_size = config::get().indexing.batch_size;
 
     let paths = config::get().app.canonicalized_sources();
@@ -137,14 +166,13 @@ async fn index(
             break;
         }
 
+        let new_record = NewPathRecord::from(event);
+        let existing = new_record.find_existing(app::db()).await?;
+
         if let IndexEvent::Remove(_) = event {
-            to_delete.push(NewPathRecord::from(event));
+            to_delete.push(existing);
             continue;
         }
-
-        let new_record = NewPathRecord::from(event);
-
-        let existing = new_record.find_existing(app::db()).await?;
 
         if let Some(existing) = existing {
             if matches!(event, IndexEvent::ForceUpdate(_)) || existing.is_outdated(&new_record) {
@@ -182,7 +210,7 @@ async fn index(
         to_reindex.push(existing);
     }
 
-    for record in to_delete {
+    for record in to_delete.iter().flatten() {
         record.remove(&mut *txn).await?;
     }
 

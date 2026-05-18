@@ -357,7 +357,7 @@ fn file_list(
 
 fn row(record: &ExistingPathRecord, link: &str, show_full_paths: bool) -> Markup {
     html! {
-        tr.(file_row_class(record)) x-on:click="search_q = ''" hx-get=(link) hx-target="#view" hx-swap="innerHTML show:top" hx-push-url="true" {
+        tr.(file_row_class(record)) x-on:click="search_q = ''" hx-get=(link) hx-target="#view" hx-push-url="true" {
             td.icon { i {} }
             td.name {
                 span {

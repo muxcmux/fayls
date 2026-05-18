@@ -158,24 +158,6 @@ impl NewPathRecord {
         }
     }
 
-    pub(crate) async fn remove<'e, E>(&self, db: E) -> Result<Vec<ExistingPathRecord>, sqlx::Error>
-    where
-        E: Executor<'e, Database = Sqlite>,
-    {
-        sqlx::query_as::<_, ExistingPathRecord>(
-            r"
-            DELETE FROM paths WHERE (name = ? AND parent = ?)
-            OR parent LIKE ? || '%'
-            RETURNING *
-            ",
-        )
-        .bind(&self.name)
-        .bind(&self.parent)
-        .bind(self.path_buf().to_string_lossy())
-        .fetch_all(db)
-        .await
-    }
-
     pub(crate) async fn find_existing<'e, E>(
         &self,
         db: E,
@@ -220,6 +202,24 @@ impl ExistingPathRecord {
             Some(p) => Path::new(p).join(&self.name),
             None => PathBuf::from(&self.name),
         }
+    }
+
+    pub(crate) async fn remove<'e, E>(&self, db: E) -> Result<Vec<ExistingPathRecord>, sqlx::Error>
+    where
+        E: Executor<'e, Database = Sqlite>,
+    {
+        sqlx::query_as::<_, ExistingPathRecord>(
+            r"
+            DELETE FROM paths WHERE (name = ? AND parent = ?)
+            OR parent LIKE ? || '%'
+            RETURNING *
+            ",
+        )
+        .bind(&self.name)
+        .bind(&self.parent)
+        .bind(self.path_buf().to_string_lossy())
+        .fetch_all(db)
+        .await
     }
 
     pub(crate) async fn index_content(&mut self, content: &str) -> Result<(), sqlx::Error> {

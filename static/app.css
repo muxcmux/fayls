@@ -318,10 +318,14 @@ body > main {
     --ribbon-angle: 10px;
     --ribbon-spacing: 2px;
     margin-bottom: var(--pico-block-spacing-horizontal);
-    justify-content: unset;
 
     details {
       font-size: .9rem;
+
+      &.dropdown>summary+ul {
+        left: unset;
+        right: 0;
+      }
 
       i {
         display: block;
@@ -359,7 +363,7 @@ body > main {
   }
 
   #breadcrumbs {
-    max-width: 100%;
+    max-width: calc(100% - 45px);
     margin-left: var(--ribbon-angle);
 
     li {
@@ -373,7 +377,6 @@ body > main {
         overflow: hidden;
         white-space: nowrap;
         text-overflow: ellipsis;
-        color: unset;
         --pico-text-decoration: none;
 
         padding-left: calc(var(--pico-nav-link-spacing-horizontal) + var(--ribbon-angle));
@@ -383,11 +386,8 @@ body > main {
         clip-path: polygon(calc(100% - var(--ribbon-angle)) 0, 100% 50%, calc(100% - var(--ribbon-angle)) 100%, 0% 100%, var(--ribbon-angle) 50%, 0% 0%);
 
         &:hover {
-          background-color: color-mix(in oklab, var(--pico-code-background-color), black 4%);
-
-          @media (prefers-color-scheme: dark) {
-            background-color: color-mix(in oklab, var(--pico-code-background-color), white 4%);
-          }
+          color: var(--pico-primary-inverse);
+          background-color: var(--pico-primary);
         }
       }
 

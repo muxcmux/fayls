@@ -160,7 +160,7 @@ pub(crate) fn layout(title: &str, restore_from_history: bool, view: &Markup) -> 
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.indigo.min.css";
+                link rel="stylesheet" href={ "https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/" (config::get().app.theme) ".min.css" };
                 link rel="stylesheet" href="/static/app.css";
                 script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/htmx.min.js" {}
                 script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/ext/hx-sse.min.js" {}

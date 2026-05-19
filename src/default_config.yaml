@@ -2,6 +2,10 @@ app:
   tesseract_bin: tesseract
   extractpdf_bin: extractpdf
   log_level: info
+  # pico.red pico.pink pico.fuchsia pico.purple pico.violet pico.indigo
+  # pico.blue pico.cyan pico.jade pico.green pico.lime pico.yellow pico.amber
+  # pico.pumpkin pico.orange pico.sand pico.grey pico.zinc pico.slate
+  theme: pico
 server:
   address: 127.0.0.1
   port: 8080

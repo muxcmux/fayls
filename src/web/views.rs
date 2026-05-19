@@ -410,23 +410,27 @@ async fn read_file(file_path: &Path) -> AppResult<Markup> {
         .unwrap_or("attempt to read as utf8");
 
     let markup = match ext {
-        "png" | "jpeg" | "jpg" | "gif" | "webp" => {
+        "png" | "jpeg" | "jpg" | "gif" | "webp" | "svg" | "bmp" => {
             html! {
                 img src={ "/read?path=" (f) };
             }
         }
-        "pdf" => {
+        "pdf" | "html" => {
             html! {
                 iframe width="100%" height="100%" src={ "/read?path=" (f) } {}
             }
         }
         _ => {
-            let contents = tokio::fs::read_to_string(file_path)
-                .await
-                .map_err(|_| anyhow::anyhow!("can't read file"))?;
-            html! {
-                pre {
-                    code { (contents) }
+            if let Ok(contents) = tokio::fs::read_to_string(file_path).await {
+                html! {
+                    pre {
+                        code { (contents) }
+                    }
+                }
+            } else {
+                html! {
+                    h3 { "This file can't be viewed." }
+                    h5 { a href={ "/download?path=" (f) } { "Download" } }
                 }
             }
         }

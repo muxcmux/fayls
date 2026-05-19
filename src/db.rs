@@ -151,13 +151,6 @@ impl From<&IndexEvent> for NewPathRecord {
 }
 
 impl NewPathRecord {
-    fn path_buf(&self) -> PathBuf {
-        match &self.parent {
-            Some(p) => Path::new(p).join(&self.name),
-            None => PathBuf::from(&self.name),
-        }
-    }
-
     pub(crate) async fn find_existing<'e, E>(
         &self,
         db: E,
@@ -359,10 +352,7 @@ async fn is_valid_fts(query: &str) -> bool {
         .await
     {
         Ok(_) => true,
-        Err(e) => {
-            tracing::warn!("bad fts query: {e}");
-            false
-        }
+        Err(e) => false,
     }
 }
 

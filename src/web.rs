@@ -158,10 +158,29 @@ async fn read_handler(req: &mut Request, res: &mut Response) -> AppResult {
     _ = NewPathRecord::from(path)
         .find_existing(app::db())
         .await?
-        .ok_or_else(|| Error::NotFound)?;
+        .ok_or(Error::NotFound)?;
 
     NamedFile::builder(path)
         .disposition_type("inline")
+        .send(req.headers(), res)
+        .await;
+
+    Ok(())
+}
+
+#[handler]
+async fn download_handler(req: &mut Request, res: &mut Response) -> AppResult {
+    let path = req
+        .query::<&str>("path")
+        .ok_or(Error::BadRequest("no path param"))?;
+
+    _ = NewPathRecord::from(path)
+        .find_existing(app::db())
+        .await?
+        .ok_or(Error::NotFound)?;
+
+    NamedFile::builder(path)
+        .disposition_type("attachment")
         .send(req.headers(), res)
         .await;
 
@@ -280,6 +299,7 @@ pub async fn server() -> (Server<TcpAcceptor>, Router) {
         )
         .push(Router::with_path("search").get(search_handler))
         .push(Router::with_path("read").get(read_handler))
+        .push(Router::with_path("download").get(download_handler))
         .push(
             Router::with_path("sse")
                 .get(sse_connected)

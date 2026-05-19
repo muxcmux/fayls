@@ -311,7 +311,7 @@ fn file_list(
     html! {
         (breadcrumbs(view, &query_string, html!{}))
 
-        table hx-get={ "/files" (view.as_str()) (&query_string) } hx-trigger="reload-view" hx-target="#view" {
+        table.striped hx-get={ "/files" (view.as_str()) (&query_string) } hx-trigger="reload-view" hx-target="#view" {
             thead hx-sse:connect={ "/sse" (view.encode()) } hx-trigger="load delay:1s" hx-config="ws.pauseOnBackground: false" {
                 tr {
                     th { }

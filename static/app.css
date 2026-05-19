@@ -95,12 +95,6 @@ body > main {
         }
       }
     }
-
-    tr:nth-child(even) {
-      td {
-        --pico-background-color: var(--muted-background-color);
-      }
-    }
   }
 
   thead {

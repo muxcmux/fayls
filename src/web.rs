@@ -89,6 +89,11 @@ pub(crate) fn get_sorting(req: &Request) -> (Sort, Order) {
 }
 
 #[handler]
+async fn healthcheck() -> &'static str {
+    "Ok"
+}
+
+#[handler]
 async fn path_handler(req: &mut Request, res: &mut Response) -> AppResult {
     // unwrapping here is safe because of the routes guard where
     // we handle the /files path by serving root dirs
@@ -292,6 +297,7 @@ pub async fn server() -> (Server<TcpAcceptor>, Router) {
         )
         .hoop(CachingHeaders::new())
         .get(list_roots_handler)
+        .push(Router::with_path("health").get(healthcheck))
         .push(
             Router::with_path("files")
                 .get(list_roots_handler)

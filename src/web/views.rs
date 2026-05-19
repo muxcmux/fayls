@@ -160,7 +160,7 @@ pub(crate) fn layout(title: &str, restore_from_history: bool, view: &Markup) -> 
             head {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
-                link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.fluid.classless.min.css";
+                link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.indigo.min.css";
                 link rel="stylesheet" href="/static/app.css";
                 script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/htmx.min.js" {}
                 script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/ext/hx-sse.min.js" {}
@@ -170,7 +170,7 @@ pub(crate) fn layout(title: &str, restore_from_history: bool, view: &Markup) -> 
                 title { (title) }
             }
             body {
-                main x-data="{ search_q: new URLSearchParams(location.search).get('q') }" {
+                main.container-fluid x-data="{ search_q: new URLSearchParams(location.search).get('q') }" {
                     form hx-get="/search" hx-push-url="true" hx-target="#view" {
                         input type="search" x-model="search_q" name="q" placeholder="Search...";
                     }
@@ -254,13 +254,13 @@ fn file_row_class(record: &ExistingPathRecord) -> String {
     }
 }
 
-fn breadcrumbs(view: &View, query_string: &str) -> Markup {
+fn breadcrumbs(view: &View, query_string: &str, after_list: Markup) -> Markup {
     let crumbs = view.breadcrumbs();
 
     html! {
         @if !crumbs.is_empty() {
             nav {
-                ul {
+                ul #breadcrumbs {
                     li {
                         a href={ "/" (query_string) } x-on:click="search_q = ''" hx-get={ "/" (query_string) } hx-target="#view" hx-push-url="true" {
                             svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" {
@@ -277,6 +277,7 @@ fn breadcrumbs(view: &View, query_string: &str) -> Markup {
                         }
                     }
                 }
+                (after_list)
             }
         }
     }
@@ -308,7 +309,7 @@ fn file_list(
     }
 
     html! {
-        (breadcrumbs(view, &query_string))
+        (breadcrumbs(view, &query_string, html!{}))
 
         table hx-get={ "/files" (view.as_str()) (&query_string) } hx-trigger="reload-view" hx-target="#view" {
             thead hx-sse:connect={ "/sse" (view.encode()) } hx-trigger="load delay:1s" hx-config="ws.pauseOnBackground: false" {
@@ -386,6 +387,24 @@ pub(crate) fn index_progress((processed, total): (i64, i64)) -> Markup {
     }
 }
 
+fn file_dropdown_menu(file_path: &Path) -> Markup {
+    html! {
+        details.dropdown {
+            summary {
+                i {}
+            }
+            ul {
+                li {
+                    a.download href={ "/download?path=" (file_path.to_string_lossy()) } {
+                        i {}
+                        "Download"
+                    }
+                }
+            }
+        }
+    }
+}
+
 async fn file_view(view: &View, file_path: &Path, req: &Request) -> AppResult<Markup> {
     let mut queries_without_search_param = req.queries().clone();
     queries_without_search_param.remove("q");
@@ -397,7 +416,7 @@ async fn file_view(view: &View, file_path: &Path, req: &Request) -> AppResult<Ma
         .ok_or_else(|| Error::NotFound)?;
 
     Ok(html! {
-        (breadcrumbs(view, &query_string))
+        (breadcrumbs(view, &query_string, file_dropdown_menu(file_path)))
         section #file-contents { (read_file(file_path).await? ) }
     })
 }
@@ -415,7 +434,12 @@ async fn read_file(file_path: &Path) -> AppResult<Markup> {
                 img src={ "/read?path=" (f) };
             }
         }
-        "pdf" | "html" => {
+        "html" => {
+            html! {
+                iframe sandbox width="100%" height="100%" src={ "/read?path=" (f) } {}
+            }
+        }
+        "pdf" => {
             html! {
                 iframe width="100%" height="100%" src={ "/read?path=" (f) } {}
             }
@@ -429,8 +453,12 @@ async fn read_file(file_path: &Path) -> AppResult<Markup> {
                 }
             } else {
                 html! {
-                    h3 { "This file can't be viewed." }
-                    h5 { a href={ "/download?path=" (f) } { "Download" } }
+                    div {
+                        h4 { "This file can't be viewed." }
+                        p {
+                            button href={ "/download?path=" (f) } { "Download" }
+                        }
+                    }
                 }
             }
         }

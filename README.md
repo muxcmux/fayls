@@ -33,9 +33,9 @@ Since we are running with docker, `sources` here will just be paths the docker i
 ```sh
 $: docker run -p 8080:8080 \
               -u 1000:1000 \
-              -v .:/fayls/data
-              -v /full/path/to/your/Documents:/Documents
-              -v /path/to/your/some_dir:/some_dir
+              -v .:/fayls/data \
+              -v /full/path/to/your/Documents:/Documents \
+              -v /path/to/your/some_dir:/some_dir \
               ghcr.io/muxcmux/fayls:latest
 ```
 

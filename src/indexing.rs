@@ -1,7 +1,6 @@
 use anyhow::{Result, bail};
 use futures_util::StreamExt;
 use std::{
-    ffi::OsStr,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -333,37 +332,50 @@ async fn extract_pdf_content(file_path: &Path) -> Result<String> {
 }
 
 async fn extract_content_from_file(file_path: &Path) -> Result<String> {
-    match file_path.extension().into() {
+    match file_path.into() {
         IndexableFileType::Pdf => Ok(extract_pdf_content(file_path).await?),
         IndexableFileType::Image => Ok(extract_image_content(file_path).await?),
         IndexableFileType::Ignored => Ok(String::new()),
-        _ => Ok(tokio::fs::read_to_string(&file_path)
+        IndexableFileType::Unknown => Ok(tokio::fs::read_to_string(&file_path)
             .await
             .map_err(|e| anyhow::anyhow!(e))?),
     }
 }
 
+#[derive(Debug)]
 enum IndexableFileType {
     Pdf,
     Image,
     Ignored,
     Unknown,
-    Other,
 }
 
-impl From<Option<&OsStr>> for IndexableFileType {
-    fn from(value: Option<&OsStr>) -> Self {
-        match value.and_then(OsStr::to_str).map(str::to_ascii_lowercase) {
+impl<T: AsRef<Path>> From<T> for IndexableFileType {
+    fn from(value: T) -> Self {
+        if value
+            .as_ref()
+            .metadata()
+            .is_ok_and(|m| m.len() > config::get().indexing.max_file_size)
+        {
+            return Self::Ignored;
+        }
+
+        match value.as_ref().to_str() {
             None => Self::Unknown,
-            Some(s) => {
-                if config::get().indexing.ignore_extensions.contains(&s) {
+            Some(f) => {
+                if !config::get().indexing.whitelisted(f) {
                     return Self::Ignored;
                 }
 
-                match s.as_ref() {
-                    "pdf" => Self::Pdf,
-                    "png" | "jpg" | "jpeg" | "tif" | "tiff" | "bmp" | "gif" | "webp" => Self::Image,
-                    _ => Self::Other,
+                match value.as_ref().extension().and_then(|m| m.to_str()) {
+                    Some(s) => match s.to_ascii_lowercase().as_ref() {
+                        "pdf" => Self::Pdf,
+                        "png" | "jpg" | "jpeg" | "tif" | "tiff" | "bmp" | "gif" | "webp" => {
+                            Self::Image
+                        }
+                        _ => Self::Unknown,
+                    },
+                    None => Self::Unknown,
                 }
             }
         }

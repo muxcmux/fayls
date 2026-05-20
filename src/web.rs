@@ -155,7 +155,7 @@ async fn search_handler(req: &mut Request, res: &mut Response) -> AppResult {
 }
 
 #[handler]
-async fn read_handler(req: &mut Request, res: &mut Response) -> AppResult {
+async fn preview_handler(req: &mut Request, res: &mut Response) -> AppResult {
     let path = req
         .query::<&str>("path")
         .ok_or(Error::BadRequest("no path param"))?;
@@ -304,7 +304,7 @@ pub async fn server() -> (Server<TcpAcceptor>, Router) {
                 .push(Router::with_path("{*path}").get(path_handler)),
         )
         .push(Router::with_path("search").get(search_handler))
-        .push(Router::with_path("read").get(read_handler))
+        .push(Router::with_path("preview").get(preview_handler))
         .push(Router::with_path("download").get(download_handler))
         .push(
             Router::with_path("sse")

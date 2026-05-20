@@ -1,4 +1,5 @@
 use config::{Environment, File, FileFormat};
+use glob_match::glob_match;
 use serde::Deserialize;
 use std::{collections::HashSet, env::args, path::PathBuf, sync::OnceLock};
 
@@ -26,13 +27,31 @@ pub struct Indexing {
     pub batch_size: usize,
     pub max_concurrent_batches: usize,
     pub max_concurrent_indexers: usize,
-    pub ignore_extensions: Vec<String>,
     pub max_retries: usize,
+    pub max_file_size: u64,
+    index_contents_whitelist: Vec<String>,
+}
+
+impl Indexing {
+    pub(crate) fn whitelisted(&self, path: &str) -> bool {
+        for glob in &self.index_contents_whitelist {
+            if glob_match(glob, path) {
+                return true;
+            }
+        }
+
+        false
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Preview {
+    pub max_unknown_file_size: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct App {
-    pub sources: Vec<PathBuf>,
+    sources: Vec<PathBuf>,
     pub log_level: String,
     pub tesseract_bin: String,
     pub extractpdf_bin: String,
@@ -67,28 +86,29 @@ impl App {
 pub struct Config {
     pub server: Server,
     pub database: Database,
+    pub preview: Preview,
     pub app: App,
     pub indexing: Indexing,
 }
 
-enum DefaultConfigFile {
+enum ConfigFile {
     Arg(String),
     Static,
 }
 
-const DEFAULT_CONFIG_FILES: &[&str] = &["config.yaml", "data/config.yaml", "/data/config.yaml"];
+const DEFAULT_CONFIG_FILES: &[&str] = &["config.yaml", "data/config.yaml"];
 
 impl Config {
-    fn from_file(f: DefaultConfigFile) -> Result<Self, config::ConfigError> {
+    fn from_file(f: ConfigFile) -> Result<Self, config::ConfigError> {
         let default = String::from_utf8_lossy(include_bytes!("default_config.yaml"));
         let mut config =
             config::Config::builder().add_source(File::from_str(&default, FileFormat::Yaml));
 
         match f {
-            DefaultConfigFile::Arg(file) => {
+            ConfigFile::Arg(file) => {
                 config = config.add_source(File::with_name(&file).required(true));
             }
-            DefaultConfigFile::Static => {
+            ConfigFile::Static => {
                 for file in DEFAULT_CONFIG_FILES {
                     config = config.add_source(File::with_name(file).required(false));
                 }
@@ -107,7 +127,7 @@ static CONFIG: OnceLock<Config> = OnceLock::new();
 pub fn load() -> Result<(), config::ConfigError> {
     let config_file = args()
         .nth(1)
-        .map_or_else(|| DefaultConfigFile::Static, DefaultConfigFile::Arg);
+        .map_or_else(|| ConfigFile::Static, ConfigFile::Arg);
     CONFIG
         .set(Config::from_file(config_file)?)
         .expect("Config already set");

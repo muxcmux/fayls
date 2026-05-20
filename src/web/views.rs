@@ -254,7 +254,7 @@ fn file_row_class(record: &ExistingPathRecord) -> String {
     }
 }
 
-fn breadcrumbs(view: &View, query_string: &str, after_list: Markup) -> Markup {
+fn breadcrumbs(view: &View, query_string: &str, after_list: &Markup) -> Markup {
     let crumbs = view.breadcrumbs();
 
     html! {
@@ -309,7 +309,7 @@ fn file_list(
     }
 
     html! {
-        (breadcrumbs(view, &query_string, html!{}))
+        (breadcrumbs(view, &query_string, &html!{}))
 
         table.striped hx-get={ "/files" (view.as_str()) (&query_string) } hx-trigger="reload-view" hx-target="#view" {
             thead hx-sse:connect={ "/sse" (view.encode()) } hx-trigger="load delay:1s" hx-config="ws.pauseOnBackground: false" {
@@ -416,35 +416,40 @@ async fn file_view(view: &View, file_path: &Path, req: &Request) -> AppResult<Ma
         .ok_or_else(|| Error::NotFound)?;
 
     Ok(html! {
-        (breadcrumbs(view, &query_string, file_dropdown_menu(file_path)))
-        section #file-contents { (read_file(file_path).await? ) }
+        (breadcrumbs(view, &query_string, &file_dropdown_menu(file_path)))
+        section #file-contents { (preview_file(file_path).await? ) }
     })
 }
 
-async fn read_file(file_path: &Path) -> AppResult<Markup> {
+async fn preview_file(file_path: &Path) -> AppResult<Markup> {
     let f = file_path.to_string_lossy();
     let ext = file_path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("attempt to read as utf8");
 
-    let markup = match ext {
+    let markup = match ext.to_ascii_lowercase().as_ref() {
         "png" | "jpeg" | "jpg" | "gif" | "webp" | "svg" | "bmp" => {
             html! {
-                img src={ "/read?path=" (f) };
+                img src={ "/preview?path=" (f) };
             }
         }
         "html" => {
             html! {
-                iframe sandbox width="100%" height="100%" src={ "/read?path=" (f) } {}
+                iframe sandbox width="100%" height="100%" src={ "/preview?path=" (f) } {}
             }
         }
         "pdf" => {
             html! {
-                iframe width="100%" height="100%" src={ "/read?path=" (f) } {}
+                iframe width="100%" height="100%" src={ "/preview?path=" (f) } {}
             }
         }
         _ => {
+            let filesize = file_path.metadata().map_or(0, |m| m.len());
+            if filesize > config::get().preview.max_unknown_file_size {
+                return Ok(no_preview(f.as_ref()));
+            }
+
             if let Ok(contents) = tokio::fs::read_to_string(file_path).await {
                 html! {
                     pre {
@@ -452,17 +457,21 @@ async fn read_file(file_path: &Path) -> AppResult<Markup> {
                     }
                 }
             } else {
-                html! {
-                    div {
-                        h4 { "This file can't be viewed." }
-                        p {
-                            button href={ "/download?path=" (f) } { "Download" }
-                        }
-                    }
-                }
+                no_preview(f.as_ref())
             }
         }
     };
 
     Ok(markup)
+}
+
+fn no_preview(f: &str) -> Markup {
+    html! {
+        div {
+            h4 { "This file can't be viewed." }
+            p {
+                button href={ "/download?path=" (f) } { "Download" }
+            }
+        }
+    }
 }

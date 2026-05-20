@@ -6,6 +6,8 @@ app:
   # pico.blue pico.cyan pico.jade pico.green pico.lime pico.yellow pico.amber
   # pico.pumpkin pico.orange pico.sand pico.grey pico.zinc pico.slate
   theme: pico
+preview:
+  max_unknown_file_size: 8388608 # 8 mib
 server:
   address: 127.0.0.1
   port: 8080
@@ -17,44 +19,8 @@ indexing:
   max_concurrent_batches: 10
   max_concurrent_indexers: 12
   max_retries: 5
-  ignore_extensions:
-    - zip
-    - gz
-    - iso
-    - bin
-    - exe
-    - dmg
-    - ics
-    - qtz
-    - msd
-    - gpg
-    - key
-    - svg
-    - apk
-    - bmpr
-    - ttf
-    - otf
-    - woff2
-    - psd
-    - ai
-    - eps
-    - swf
-    - fla
-    - xls
-    - xslx
-    - doc
-    - docx
-    - sketch
-    - webm
-    - heic
-    - mid
-    - midi
-    - mp3
-    - mp4
-    - m4a
-    - m4p
-    - m4v
-    - mkv
-    - mov
-    - avi
-    - ovpn
+  max_file_size: 134217728 # 128 mib
+  index_contents_whitelist:
+    - "**/*.{pdf,txt,md,rtf,html,png,jpg,jpeg,tif,tiff,bmp,gif,webp}"
+    - "**/*.{PDF,TXT,MD,RTF,HTML,PNG,JPG,JPEG,TIF,TIFF,BMP,GIF,WEBP}"
+    - "**/README"

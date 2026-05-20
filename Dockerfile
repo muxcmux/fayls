@@ -12,11 +12,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 COPY . .
 
-# Cache cargo registry + git + target
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/app/target \
-    cargo install --path .
+    --mount=type=cache,target=/fayls/target \
+    cargo build --release
 
 FROM alpine
 WORKDIR /fayls
@@ -26,8 +25,8 @@ RUN apk add --no-cache sqlite \
                        tesseract-ocr-data-eng \
                        tesseract-ocr-data-bul
 
-COPY --from=builder /usr/local/cargo/bin/fayls /usr/local/bin/fayls
-COPY --from=builder /usr/local/cargo/bin/extractpdf /usr/local/bin/extractpdf
+COPY --from=builder /fayls/target/release/fayls /usr/local/bin/fayls
+COPY --from=builder /fayls/target/release/extractpdf /usr/local/bin/extractpdf
 COPY ./static /fayls/static
 
 CMD ["fayls"]

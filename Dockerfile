@@ -1,7 +1,22 @@
 FROM rust:alpine AS builder
-WORKDIR /usr/src/fayls
+
+WORKDIR /fayls
+
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo "fn main() {}" > src/main.rs
+
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/fayls/target \
+    cargo build --release
+
 COPY . .
-RUN cargo install --path .
+
+# Cache cargo registry + git + target
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo install --path .
 
 FROM alpine
 WORKDIR /fayls

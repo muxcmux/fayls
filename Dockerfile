@@ -7,15 +7,16 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/fayls/target/release \
-    cargo build --release
+    --mount=type=cache,target=/usr/local/cargo/bin \
+    cargo install --path .
 
 COPY . .
 
+# Cache cargo registry + git + target
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/fayls/target/release \
-    cargo build --release
+    --mount=type=cache,target=/usr/local/cargo/bin \
+    cargo install --path .
 
 FROM alpine
 WORKDIR /fayls
@@ -25,8 +26,8 @@ RUN apk add --no-cache sqlite \
                        tesseract-ocr-data-eng \
                        tesseract-ocr-data-bul
 
-COPY --from=builder /fayls/target/release/fayls /usr/local/bin/fayls
-COPY --from=builder /fayls/target/release/extractor /usr/local/bin/extractor
+COPY --from=builder /usr/local/cargo/bin/fayls /usr/local/bin/fayls
+COPY --from=builder /usr/local/cargo/bin/extractor /usr/local/bin/extractor
 COPY ./static /fayls/static
 
 CMD ["fayls"]

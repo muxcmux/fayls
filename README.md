@@ -8,7 +8,7 @@ directory index (mod_dir), but with search functionality.
 ## Features
 
 - lists dirs and files
-- view some files - images, pdf (uses browser pdf viewer), and utf8 text
+- preview some files - images, pdf (uses browser pdf viewer), docx, and utf8 text
 - sort by name/last modified date/size
 - live server updates with sse
 - search by filename or contents - indexes text from pdf, office docs and utf8

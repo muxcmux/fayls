@@ -164,6 +164,8 @@ pub(crate) fn layout(title: &str, restore_from_history: bool, view: &Markup) -> 
                 link rel="stylesheet" href="/static/app.css";
                 script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/htmx.min.js" {}
                 script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/ext/hx-sse.min.js" {}
+                script src="https://unpkg.com/jszip/dist/jszip.min.js" {}
+                script src="https://unpkg.com/docx-preview/dist/docx-preview.min.js" {}
                 script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" {}
                 script src="/static/app.js" {}
 
@@ -444,6 +446,11 @@ async fn preview_file(file_path: &Path) -> AppResult<Markup> {
                 iframe width="100%" height="100%" src={ "/preview?path=" (f) } {}
             }
         }
+        "docx" => {
+            html! {
+                div aria-busy="true" x-ref="doc" x-init={ "preview_docx($refs.doc, '/preview?path=" (f) "')" } { }
+            }
+        }
         _ => {
             let filesize = file_path.metadata().map_or(0, |m| m.len());
             if filesize > config::get().preview.max_unknown_file_size {
@@ -467,7 +474,7 @@ async fn preview_file(file_path: &Path) -> AppResult<Markup> {
 
 fn no_preview(f: &str) -> Markup {
     html! {
-        div {
+        div.no-preview {
             h4 { "This file can't be viewed." }
             p {
                 button href={ "/download?path=" (f) } { "Download" }

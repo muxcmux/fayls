@@ -48,7 +48,12 @@ body > main {
       0 0 / var(--size) var(--size);
   }
 
-  div {
+  .docx-wrapper article {
+    padding: 0;
+    box-shadow: none;
+  }
+
+  .no-preview {
     padding: 5rem;
     text-align: center;
 

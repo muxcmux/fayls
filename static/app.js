@@ -26,3 +26,15 @@ function timeAgo(unixTimestamp) {
     }
   }
 }
+
+async function preview_docx(el, url) {
+  const blob = await fetch(url).then(r => r.blob());
+  const opts = {
+    useBase64URL: true,
+  }
+  docx.renderAsync(blob, el, null, opts).then(() => {
+    el.removeAttribute("aria-busy");
+    el.querySelector('.docx-wrapper').style = "background: var(--pico-muted-border-color)"
+    el.querySelectorAll('.docx-wrapper section.docx').forEach(m => m.setAttribute('data-theme', 'light'))
+  });
+}

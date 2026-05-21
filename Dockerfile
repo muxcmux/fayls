@@ -7,14 +7,14 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/fayls/target \
+    --mount=type=cache,target=/fayls/target/release \
     cargo build --release
 
 COPY . .
 
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    --mount=type=cache,target=/fayls/target \
+    --mount=type=cache,target=/fayls/target/release \
     cargo build --release
 
 FROM alpine

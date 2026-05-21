@@ -26,7 +26,7 @@ RUN apk add --no-cache sqlite \
                        tesseract-ocr-data-bul
 
 COPY --from=builder /fayls/target/release/fayls /usr/local/bin/fayls
-COPY --from=builder /fayls/target/release/extractpdf /usr/local/bin/extractpdf
+COPY --from=builder /fayls/target/release/extractor /usr/local/bin/extractor
 COPY ./static /fayls/static
 
 CMD ["fayls"]

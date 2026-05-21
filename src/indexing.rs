@@ -267,9 +267,13 @@ async fn index_contents(record: &mut ExistingPathRecord) -> Result<()> {
     let content = if record.kind == PathRecordKind::Directory {
         String::new()
     } else {
-        extract_content_from_file(path.as_ref())
-            .await
-            .unwrap_or_default()
+        match extract_content_from_file(path.as_ref()).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("failed extracting from file: {}:\n{}", path.display(), e);
+                String::new()
+            }
+        }
     };
 
     record.index_content(&content).await?;
@@ -294,36 +298,14 @@ pub(crate) async fn get_progress() -> Result<(i64, i64), sqlx::Error> {
     .await
 }
 
-async fn extract_image_content(file_path: &Path) -> Result<String> {
-    let output = Command::new(&config::get().app.tesseract_bin)
-        .arg(file_path)
-        .arg("stdout")
-        .output()
-        .await?;
+async fn extract_with_external_command(command: &mut Command) -> Result<String> {
+    let output = command.output().await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         bail!(
-            "tesseract failed for {}:\n{}",
-            file_path.display(),
-            stderr.trim()
-        );
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).into())
-}
-
-async fn extract_pdf_content(file_path: &Path) -> Result<String> {
-    let output = Command::new(&config::get().app.extractpdf_bin)
-        .arg(file_path)
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "extractpdf failed for {}:\n{}",
-            file_path.display(),
+            "extracting with command failed {:?} failed:\n{}",
+            command,
             stderr.trim()
         );
     }
@@ -333,8 +315,16 @@ async fn extract_pdf_content(file_path: &Path) -> Result<String> {
 
 async fn extract_content_from_file(file_path: &Path) -> Result<String> {
     match file_path.into() {
-        IndexableFileType::Pdf => Ok(extract_pdf_content(file_path).await?),
-        IndexableFileType::Image => Ok(extract_image_content(file_path).await?),
+        IndexableFileType::Image => Ok(extract_with_external_command(
+            Command::new(&config::get().app.tesseract_bin)
+                .arg(file_path)
+                .arg("stdout"),
+        )
+        .await?),
+        IndexableFileType::Doc => Ok(extract_with_external_command(
+            Command::new(&config::get().app.extractor_bin).arg(file_path),
+        )
+        .await?),
         IndexableFileType::Ignored => Ok(String::new()),
         IndexableFileType::Unknown => Ok(tokio::fs::read_to_string(&file_path)
             .await
@@ -344,7 +334,7 @@ async fn extract_content_from_file(file_path: &Path) -> Result<String> {
 
 #[derive(Debug)]
 enum IndexableFileType {
-    Pdf,
+    Doc,
     Image,
     Ignored,
     Unknown,
@@ -369,7 +359,7 @@ impl<T: AsRef<Path>> From<T> for IndexableFileType {
 
                 match value.as_ref().extension().and_then(|m| m.to_str()) {
                     Some(s) => match s.to_ascii_lowercase().as_ref() {
-                        "pdf" => Self::Pdf,
+                        "pdf" | "docx" | "pptx" | "xlsx" | "odp" | "ods" | "odt" => Self::Doc,
                         "png" | "jpg" | "jpeg" | "tif" | "tiff" | "bmp" | "gif" | "webp" => {
                             Self::Image
                         }

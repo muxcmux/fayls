@@ -1,6 +1,6 @@
 app:
   tesseract_bin: tesseract
-  extractpdf_bin: extractpdf
+  extractor_bin: extractor
   log_level: info
   # pico.red pico.pink pico.fuchsia pico.purple pico.violet pico.indigo
   # pico.blue pico.cyan pico.jade pico.green pico.lime pico.yellow pico.amber
@@ -21,6 +21,6 @@ indexing:
   max_retries: 5
   max_file_size: 134217728 # 128 mib
   index_contents_whitelist:
-    - "**/*.{pdf,txt,md,rtf,html,png,jpg,jpeg,tif,tiff,bmp,gif,webp}"
-    - "**/*.{PDF,TXT,MD,RTF,HTML,PNG,JPG,JPEG,TIF,TIFF,BMP,GIF,WEBP}"
+    - "**/*.{pdf,docx,pptx,xlsx,odp,ods,odt,txt,md,rtf,html,png,jpg,jpeg,tif,tiff,bmp,gif,webp}"
+    - "**/*.{PDF,DOCX,PPTX,XLSX,ODP,ODS,ODT,TXT,MD,RTF,HTML,PNG,JPG,JPEG,TIF,TIFF,BMP,GIF,WEBP}"
     - "**/README"

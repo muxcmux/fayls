@@ -39,6 +39,7 @@ serde = { version = "1", features = ["derive"] }
 config = "0.15"
 
 pdf_oxide = "0.3"
+dotext = { git = "https://github.com/anvie/dotext.git", rev = "06b1600" }
 
 [profile.release]
 lto = true

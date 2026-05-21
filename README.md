@@ -1,17 +1,19 @@
 # Fayls
 
-Fayls is a minimal free open-source self-hosted file browser.
+Fayls is a minimal self-hosted file browser - an alternative to `python -m http.server` or Apache's
+directory index (mod_dir), but with search functionality.
 
 <img width="1020" alt="Fayls browsing screenshot" src="https://github.com/user-attachments/assets/08ea9e94-48c1-47f5-8578-c9a3300a86e5" />
 
 ## Features
 
 - lists dirs and files
-- view some files - utf8 readable text, images, pdf
+- view some files - images, pdf (uses browser pdf viewer), and utf8 text
 - sort by name/last modified date/size
 - live server updates with sse
-- search by filename or contents - indexes utf8 contents, text from pdf and does ocr for images with
-  tesseract
+- search by filename or contents - indexes text from pdf, office docs and utf8
+  readable files (have to be whitelisted first though). does ocr for images
+  with tesseract
 
 ## Run with Docker
 
@@ -46,4 +48,8 @@ That's it. Now go to http://localhost:8080 and browse.
 
 ## Configuration
 
-Default config file is in `src/default_config.yaml`. Entries should be self-explanatory.
+Default config file is in `src/default_config.yaml`. Image comes with the `fayls` server executable,
+the `extractor` bin and `tesseract` bin, so no need to install anything additional. Tesseract uses
+the English and Bulgarian lang packs. If you need to install more langs, you'd have to modify the
+image and do an `apk add tesseract-ocr-data-*` where `*` is the lang you want. Rest of the entries
+should be self-explanatory.

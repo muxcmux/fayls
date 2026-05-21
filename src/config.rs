@@ -54,7 +54,7 @@ pub struct App {
     sources: Vec<PathBuf>,
     pub log_level: String,
     pub tesseract_bin: String,
-    pub extractpdf_bin: String,
+    pub extractor_bin: String,
     pub theme: String,
 }
 

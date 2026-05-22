@@ -6,7 +6,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use std::{
     collections::HashMap,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{LazyLock, Mutex},
 };
 
@@ -157,19 +157,34 @@ async fn search_handler(req: &mut Request, res: &mut Response) -> AppResult {
 #[handler]
 async fn preview_handler(req: &mut Request, res: &mut Response) -> AppResult {
     let path = req
-        .query::<&str>("path")
+        .query::<PathBuf>("path")
         .ok_or(Error::BadRequest("no path param"))?;
 
-    _ = NewPathRecord::from(path)
+    _ = NewPathRecord::from(&path)
         .find_existing(app::db())
         .await?
         .ok_or(Error::NotFound)?;
 
+    match path.extension().and_then(|e| e.to_str()) {
+        Some(ext) => match ext.to_ascii_lowercase().as_ref() {
+            "docx" => preview_docx_file(&path, res).await?,
+            _ => serve_inline_file(&path, req, res).await,
+        },
+        None => serve_inline_file(&path, req, res).await,
+    }
+
+    Ok(())
+}
+
+async fn serve_inline_file(path: &Path, req: &mut Request, res: &mut Response) {
     NamedFile::builder(path)
         .disposition_type("inline")
         .send(req.headers(), res)
         .await;
+}
 
+async fn preview_docx_file(path: &Path, res: &mut Response) -> AppResult {
+    res.render(Text::Html(views::docx_frame(path).await?.into_string()));
     Ok(())
 }
 

@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use base64_turbo::URL_SAFE_NO_PAD;
+use base64_turbo::{STANDARD, URL_SAFE_NO_PAD};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use multimap::MultiMap;
 use salvo::Request;
@@ -186,6 +186,60 @@ pub(crate) fn layout(title: &str, restore_from_history: bool, view: &Markup) -> 
             }
         }
     }
+}
+
+pub(crate) async fn docx_frame(path: &Path) -> AppResult<Markup> {
+    let contents = tokio::fs::read(path)
+        .await
+        .map_err(|e| anyhow::anyhow!("can't read file {e}"))?;
+
+    Ok(html! {
+        (DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                script src="https://unpkg.com/jszip/dist/jszip.min.js" {}
+                script src="https://unpkg.com/docx-preview/dist/docx-preview.min.js" {}
+                title { (path.to_str().unwrap_or_default()) }
+                script type="text/javascript" {
+                    (PreEscaped("
+                        document.addEventListener('DOMContentLoaded', (_) => {
+                            const template = document.body.querySelector('template');
+                            const contents = template.content.textContent.trim();
+                            const blob = Uint8Array.fromBase64(contents);
+                            const opts = { useBase64URL: true };
+                            docx.renderAsync(blob, main, null, opts).then(() => {
+                                main.style = 'display: unset';
+                                main.querySelector('.docx-wrapper').style = 'background: var(--bg)'
+                            });
+                        });
+                    "))
+                }
+                style {
+                    (PreEscaped("
+                        :root {
+                          --bg: #e7eaf0;
+                          @media (prefers-color-scheme: dark) {
+                            --bg: #202632;
+                          }
+                        }
+                        main { display: none }
+                        body {
+                            background: var(--bg);
+                            margin: 0;
+                        }
+                    "))
+                }
+            }
+            body {
+                template {
+                    (STANDARD.encode(contents))
+                }
+                main #main {}
+            }
+        }
+    })
 }
 
 pub(crate) async fn page(page: Page, req: &Request) -> AppResult<Markup> {
@@ -441,14 +495,9 @@ async fn preview_file(file_path: &Path) -> AppResult<Markup> {
                 iframe sandbox width="100%" height="100%" src={ "/preview?path=" (f) } {}
             }
         }
-        "pdf" => {
+        "pdf" | "docx" => {
             html! {
                 iframe width="100%" height="100%" src={ "/preview?path=" (f) } {}
-            }
-        }
-        "docx" => {
-            html! {
-                div aria-busy="true" x-ref="doc" x-init={ "preview_docx($refs.doc, '/preview?path=" (f) "')" } { }
             }
         }
         _ => {

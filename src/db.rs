@@ -4,9 +4,9 @@ use std::{
 };
 
 use sqlx::{
-    Database, Decode, Encode, Executor, FromRow, IntoArguments, Sqlite, Type,
+    AssertSqlSafe, Database, Decode, Encode, Executor, FromRow, IntoArguments, Sqlite, Type,
     query::QueryAs,
-    sqlite::{SqliteArgumentValue, SqliteTypeInfo, SqliteValueRef},
+    sqlite::{SqliteArgumentsBuffer, SqliteTypeInfo, SqliteValueRef},
 };
 
 use crate::{
@@ -16,14 +16,14 @@ use crate::{
 };
 
 fn bind_vec<'q, DB, O, B>(
-    mut q: QueryAs<'q, DB, O, <DB as Database>::Arguments<'q>>,
+    mut q: QueryAs<'q, DB, O, <DB as Database>::Arguments>,
     binds: &'q [B],
-) -> QueryAs<'q, DB, O, <DB as Database>::Arguments<'q>>
+) -> QueryAs<'q, DB, O, <DB as Database>::Arguments>
 where
     DB: Database,
     B: 'q + Encode<'q, DB> + Type<DB>,
     O: for<'r> FromRow<'r, DB::Row> + Send,
-    <DB as Database>::Arguments<'q>: IntoArguments<'q, DB>,
+    <DB as Database>::Arguments: IntoArguments<DB>,
 {
     for b in binds {
         q = q.bind(b);
@@ -77,10 +77,10 @@ impl<'r> Decode<'r, Sqlite> for PathRecordKind {
     }
 }
 
-impl<'q> Encode<'q, Sqlite> for PathRecordKind {
+impl Encode<'_, Sqlite> for PathRecordKind {
     fn encode_by_ref(
         &self,
-        buf: &mut Vec<SqliteArgumentValue<'q>>,
+        buf: &mut SqliteArgumentsBuffer,
     ) -> Result<sqlx::encode::IsNull, sqlx::error::BoxDynError> {
         <&str as Encode<Sqlite>>::encode(self.as_str(), buf)
     }
@@ -303,7 +303,7 @@ pub(crate) async fn list_paths(
         ),
         paths.len(),
     );
-    let query = sqlx::query_as::<_, ExistingPathRecord>(&sql);
+    let query = sqlx::query_as::<_, ExistingPathRecord>(AssertSqlSafe(sql));
 
     bind_vec(query, paths).fetch_all(app::db()).await
 }
@@ -346,14 +346,11 @@ const FTS_QUERY: &str = r"
 ";
 
 async fn is_valid_fts(query: &str) -> bool {
-    match sqlx::query("SELECT content FROM fts_query_validator WHERE content MATCH ?")
+    sqlx::query("SELECT content FROM fts_query_validator WHERE content MATCH ?")
         .bind(query)
         .fetch_optional(app::db())
         .await
-    {
-        Ok(_) => true,
-        Err(e) => false,
-    }
+        .is_ok()
 }
 
 pub(crate) async fn search(term: &str) -> Result<Vec<ExistingPathRecord>, sqlx::Error> {

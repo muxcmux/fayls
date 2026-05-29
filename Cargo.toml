@@ -20,7 +20,7 @@ salvo ={ version = "0.93", features = ["affix-state", "caching-headers", "compre
 form_urlencoded = "1.2"
 multimap = "0.10"
 
-sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio", "migrate"] }
+sqlx = { version = "0.9", features = ["sqlite", "runtime-tokio", "migrate"] }
 
 maud = "0.27"
 

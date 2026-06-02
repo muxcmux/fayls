@@ -383,7 +383,7 @@ fn file_list(
                     }
                 } @else {
                     @for file in files {
-                        @let link = format!("/files{}/{}{}", file.parent.as_ref().unwrap_or(&String::new()), file.name, &query_string);
+                        @let link = format!("/files{}{}", file.path_buf().to_string_lossy(), &query_string);
                         (row(file, &link, show_full_paths))
                     }
                 }

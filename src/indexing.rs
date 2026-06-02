@@ -359,7 +359,9 @@ impl<T: AsRef<Path>> From<T> for IndexableFileType {
 
                 match value.as_ref().extension().and_then(|m| m.to_str()) {
                     Some(s) => match s.to_ascii_lowercase().as_ref() {
-                        "pdf" | "docx" | "pptx" | "xlsx" | "odp" | "ods" | "odt" => Self::Doc,
+                        "pdf" | "docx" | "pptx" | "xlsx" | "odp" | "ods" | "odt" | "epub" => {
+                            Self::Doc
+                        }
                         "png" | "jpg" | "jpeg" | "tif" | "tiff" | "bmp" | "gif" | "webp" => {
                             Self::Image
                         }

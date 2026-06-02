@@ -40,6 +40,7 @@ config = "0.15"
 
 pdf_oxide = "0.3"
 dotext = { git = "https://github.com/anvie/dotext.git", rev = "06b1600" }
+epub = "2"
 
 [profile.release]
 lto = true

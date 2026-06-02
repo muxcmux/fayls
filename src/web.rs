@@ -165,6 +165,11 @@ async fn preview_handler(req: &mut Request, res: &mut Response) -> AppResult {
         .await?
         .ok_or(Error::NotFound)?;
 
+    if req.query::<&str>("force_inline").is_some() {
+        serve_inline_file(&path, req, res).await;
+        return Ok(());
+    }
+
     match path.extension().and_then(|e| e.to_str()) {
         Some(ext) => match ext.to_ascii_lowercase().as_ref() {
             "docx" => preview_docx_file(&path, res).await?,

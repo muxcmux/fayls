@@ -1,8 +1,9 @@
 use anyhow::{Result, anyhow, bail};
 use dotext::doc::{HasKind, OpenOfficeDoc};
 use dotext::{Docx, MsDoc, Odp, Ods, Odt, Pptx, Xlsx};
+use epub::doc::EpubDoc;
 use pdf_oxide::PdfDocument;
-use std::io::Read;
+use std::io::{Cursor, Read};
 use std::path::Path;
 
 fn main() -> Result<()> {
@@ -26,6 +27,7 @@ fn main() -> Result<()> {
         "odp" => open_office(Odp::open(path).expect("Cannot open file")),
         "ods" => open_office(Ods::open(path).expect("Cannot open file")),
         "odt" => open_office(Odt::open(path).expect("Cannot open file")),
+        "epub" => epub(path),
         _ => bail!("Unknown file format"),
     }
 }
@@ -52,6 +54,28 @@ fn pdf(path: &Path) -> Result<()> {
 
     for i in 0..len {
         println!("{}", doc.extract_text(i)?);
+    }
+
+    Ok(())
+}
+
+fn epub(path: &Path) -> Result<()> {
+    let contents = std::fs::read(path)?;
+    let cursor = Cursor::new(contents);
+    let mut doc = EpubDoc::from_reader(cursor).map_err(|e| anyhow::anyhow!(e))?;
+
+    if let Some(title) = doc.get_title() {
+        println!("{title}");
+    }
+
+    if let Some((chapter, _)) = doc.get_current_str() {
+        println!("{chapter}");
+    }
+
+    while doc.go_next() {
+        if let Some((chapter, _)) = doc.get_current_str() {
+            println!("{chapter}");
+        }
     }
 
     Ok(())

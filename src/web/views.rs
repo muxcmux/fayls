@@ -164,8 +164,6 @@ pub(crate) fn layout(title: &str, restore_from_history: bool, view: &Markup) -> 
                 link rel="stylesheet" href="/static/app.css";
                 script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/htmx.min.js" {}
                 script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/ext/hx-sse.min.js" {}
-                script src="https://unpkg.com/jszip/dist/jszip.min.js" {}
-                script src="https://unpkg.com/docx-preview/dist/docx-preview.min.js" {}
                 script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" {}
                 script src="/static/app.js" {}
 
@@ -498,6 +496,11 @@ async fn preview_file(file_path: &Path) -> AppResult<Markup> {
         "pdf" | "docx" => {
             html! {
                 iframe width="100%" height="100%" src={ "/preview?path=" (f) } {}
+            }
+        }
+        "epub" => {
+            html! {
+                iframe width="100%" height="100%" src={ "/static/vendor/epub/index.html?book=/preview?path=" (f) "&force_inline=true" } {}
             }
         }
         _ => {

@@ -26,3 +26,20 @@ function timeAgo(unixTimestamp) {
     }
   }
 }
+
+htmx.on('htmx:before:history:update', () => {
+  sessionStorage.setItem('scrollY', window.scrollY);
+});
+
+document.addEventListener('htmx:before:history:restore', () => {
+  sessionStorage.setItem('willRestoreHistory', true);
+});
+
+htmx.on('htmx:after:settle', () => {
+  if (sessionStorage.getItem('willRestoreHistory')) {
+    const y = parseInt(sessionStorage.getItem('scrollY') || '0', 10);
+    window.scrollTo(0, y);
+  }
+
+  sessionStorage.removeItem('willRestoreHistory');
+})

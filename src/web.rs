@@ -216,7 +216,9 @@ async fn download_handler(req: &mut Request, res: &mut Response) -> AppResult {
 async fn serve_static_file(req: &mut Request, res: &mut Response) -> AppResult {
     let file = req.param::<&str>("file").ok_or(Error::NotFound)?;
 
-    NamedFile::builder(file).send(req.headers(), res).await;
+    NamedFile::builder(PathBuf::from("static").join(file))
+        .send(req.headers(), res)
+        .await;
 
     Ok(())
 }
@@ -331,8 +333,7 @@ pub async fn server() -> (Server<TcpAcceptor>, Router) {
                 .get(sse_connected)
                 .push(Router::with_path("{*page}").get(sse_connected)),
         )
-        // always needs to be last
-        .push(Router::with_path("{*file}").get(serve_static_file));
+        .push(Router::with_path("static/{*file}").get(serve_static_file));
 
     let server = Server::new(acceptor);
     (server, router)

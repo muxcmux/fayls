@@ -21,6 +21,9 @@ Make a new dir somewhere and create a `config.yaml` file with the minimal config
 
 ```yaml
 app:
+  auth:
+    user: admin
+    pass: 5up3r_h4xx0r
   sources:
     - /Documents
     - /some_dir
@@ -28,6 +31,12 @@ app:
 
 Add all the dirs you want to index/list under `sources`. Avoid adding subdirectories of already
 added ones, e.g. `/Downloads`, and then `/Downloads/Games`.
+
+Fayls only supports basic auth, which is useless if not behind tls terminated
+connection, so make sure you run this behind caddy or somethig that handles
+certs and https. Obviously choose a different user/pass combo.
+
+If you fail to supply this minimal config, the container will not be able to start.
 
 Since we are running with docker, `sources` here will just be paths the docker image sees.
 
@@ -42,7 +51,8 @@ $: docker run -p 8080:8080 \
 ```
 
 Mount every corresponding entry in `sources` as a volume, and also the current directory to
-`/fayls/data`: this is where fayls looks for the default config and will create its database.
+`/fayls/data`: this is where fayls looks for the default config and will create its database
+and cache.
 
 That's it. Now go to http://localhost:8080 and browse.
 

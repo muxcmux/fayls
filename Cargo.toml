@@ -6,6 +6,7 @@ edition = "2024"
 default-run = "fayls"
 
 [dependencies]
+rand = "0.10"
 tokio = { version = "1", features = ["macros", "signal", "fs", "process"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio-stream = "0.1"
@@ -13,7 +14,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"
 
-salvo ={ version = "0.93", features = ["affix-state", "caching-headers", "compression", "sse"] }
+salvo ={ version = "0.93", features = ["affix-state", "caching-headers", "compression", "sse", "session"] }
 # need these because salvo doesn't re-export them
 # and so you can't pass queries around in functions
 # or build query strings fffs
@@ -27,6 +28,8 @@ maud = "0.27"
 anyhow = "1"
 thiserror = "2"
 tempfile = "3"
+
+subtle = "2"
 
 walkdir = "2"
 notify-debouncer-full = { version = "0.8.0-rc.2", features = ["tokio"] }

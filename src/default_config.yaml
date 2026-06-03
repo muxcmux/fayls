@@ -6,6 +6,7 @@ app:
   # pico.blue pico.cyan pico.jade pico.green pico.lime pico.yellow pico.amber
   # pico.pumpkin pico.orange pico.sand pico.grey pico.zinc pico.slate
   theme: pico
+  cache_dir: data
 preview:
   max_unknown_file_size: 8388608 # 8 mib
 server:

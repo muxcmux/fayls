@@ -1,5 +1,6 @@
 use config::{Environment, File, FileFormat};
 use glob_match::glob_match;
+use rand::RngExt;
 use serde::Deserialize;
 use std::{collections::HashSet, env::args, path::PathBuf, sync::OnceLock};
 
@@ -56,6 +57,13 @@ pub struct App {
     pub tesseract_bin: String,
     pub extractor_bin: String,
     pub theme: String,
+    pub cache_dir: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct Auth {
+    pub user: String,
+    pub pass: String,
 }
 
 static CANONICALIZED_SOURCES: OnceLock<HashSet<PathBuf>> = OnceLock::new();
@@ -89,6 +97,7 @@ pub struct Config {
     pub preview: Preview,
     pub app: App,
     pub indexing: Indexing,
+    pub auth: Auth,
 }
 
 enum ConfigFile {
@@ -122,6 +131,7 @@ impl Config {
 }
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
+static SECRET: OnceLock<Vec<u8>> = OnceLock::new();
 
 #[allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 pub fn load() -> Result<(), config::ConfigError> {
@@ -132,10 +142,27 @@ pub fn load() -> Result<(), config::ConfigError> {
         .set(Config::from_file(config_file)?)
         .expect("Config already set");
 
+    _ = std::fs::create_dir_all(&get().app.cache_dir);
+
     Ok(())
 }
 
 #[allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 pub fn get() -> &'static Config {
     CONFIG.get().expect("Confing not initialized")
+}
+
+pub(crate) fn secret() -> &'static [u8] {
+    SECRET.get_or_init(|| {
+        let sf = get().app.cache_dir.join("secret");
+
+        if let Ok(bytes) = std::fs::read(&sf) {
+            return bytes;
+        }
+
+        let mut bytes = vec![0u8; 128];
+        rand::rng().fill(&mut bytes[..]);
+        _ = std::fs::write(&sf, &bytes);
+        bytes
+    })
 }

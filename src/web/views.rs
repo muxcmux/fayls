@@ -171,8 +171,14 @@ pub(crate) fn layout(title: &str, restore_from_history: bool, view: &Markup) -> 
             }
             body {
                 main #container.container-fluid x-data="{ search_q: new URLSearchParams(location.search).get('q') }" {
-                    form hx-get="/search" hx-push-url="true" hx-target="#view" hx-swap="innerMorph show:top showTarget:#container" {
+                    form #search hx-get="/search" hx-push-url="true" hx-target="#view" hx-swap="innerMorph show:top showTarget:#container" {
                         input type="search" x-model="search_q" name="q" placeholder="Search...";
+                        a href="/logout" hx-delete="/logout" hx-target="#container" {
+                            svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 16 16" {
+                                path d="M7.5 1v7h1V1z" {}
+                                path d="M3 8.812a5 5 0 0 1 2.578-4.375l-.485-.874A6 6 0 1 0 11 3.616l-.501.865A5 5 0 1 1 3 8.812" {}
+                            }
+                        }
                     }
                     section #view {
                         { (view) }
@@ -186,6 +192,37 @@ pub(crate) fn layout(title: &str, restore_from_history: bool, view: &Markup) -> 
     }
 }
 
+pub(crate) fn login(error: Option<&str>, username: Option<&String>) -> Markup {
+    html! {
+        (DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                link rel="stylesheet" href={ "https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/" (config::get().app.theme) ".min.css" };
+                link rel="stylesheet" href="/static/app.css";
+                title { "Login to Fayls" }
+            }
+            body {
+                dialog open {
+                    article {
+                        header {
+                            strong { "Login" }
+                        }
+                        form action="/login" method="POST" {
+                            input type="text" name="username" value=[username] placeholder="user";
+                            input type="password" name="password" placeholder="password";
+                            input type="submit" value="Login";
+                        }
+                        @if error.is_some() {
+                            div.alert { (error.unwrap()) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 pub(crate) async fn docx_frame(path: &Path) -> AppResult<Markup> {
     let contents = tokio::fs::read(path)
         .await

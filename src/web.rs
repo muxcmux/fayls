@@ -12,7 +12,7 @@ use std::{
 
 use crate::{
     app, config,
-    db::NewPathRecord,
+    db::{NewPathRecord, NewShareRecord},
     error::{AppResult, Error},
     web::views::Page,
 };
@@ -294,18 +294,25 @@ async fn share_handler(req: &mut Request, res: &mut Response) -> AppResult {
     if req.method() == salvo::http::Method::GET {
         let path = req.query::<PathBuf>("path").ok_or(Error::NotFound)?;
 
-        let record = NewPathRecord::from(&path)
+        let path_record = NewPathRecord::from(&path)
             .find_existing(app::db())
             .await?
             .ok_or(Error::NotFound)?;
 
-        res.render(Text::Html(views::share_modal(&record).into_string()));
+        let share_record = NewShareRecord::new(path_record.id).await?;
+
+        res.render(Text::Html(
+            views::share_modal(&path_record, &share_record).into_string(),
+        ));
 
         return Ok(());
     }
 
     if req.method() == salvo::http::Method::POST {
-        res.render(Text::Html(""));
+        match req.parse_form::<NewShareRecord>().await {
+            Ok(record) => res.render(Text::Html("")),
+            Err(e) => res.render(Text::Html(e.to_string())),
+        }
     }
 
     Ok(())

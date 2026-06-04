@@ -3,6 +3,7 @@ use std::{
     time::UNIX_EPOCH,
 };
 
+use serde::Deserialize;
 use sqlx::{
     AssertSqlSafe, Database, Decode, Encode, Executor, FromRow, IntoArguments, Sqlite, Type,
     query::QueryAs,
@@ -362,4 +363,53 @@ pub(crate) async fn search(term: &str) -> Result<Vec<ExistingPathRecord>, sqlx::
     .bind(term)
     .fetch_all(app::db())
     .await
+}
+
+#[derive(FromRow)]
+pub(crate) struct ExistingShareRecord {
+    pub(crate) id: i64,
+    pub(crate) path_id: i64,
+    pub(crate) url: String,
+    pub(crate) password: Option<String>,
+    pub(crate) accessed: i64,
+}
+
+impl ExistingShareRecord {
+    async fn find_by_url(url: &str) -> Result<Option<Self>, sqlx::Error> {
+        sqlx::query_as::<_, Self>("SELECT * FROM shares WHERE url = ? LIMIT 1")
+            .bind(url)
+            .fetch_optional(app::db())
+            .await
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct NewShareRecord {
+    pub(crate) path_id: i64,
+    pub(crate) url: String,
+    pub(crate) expires_at: Option<i64>,
+    pub(crate) password: Option<String>,
+}
+
+impl NewShareRecord {
+    pub(crate) async fn new(path_id: i64) -> anyhow::Result<Self> {
+        const MAX_RETRIES: usize = 8;
+        let mut retry = 0;
+
+        while retry < MAX_RETRIES {
+            let url = nanoid::nanoid!(10, &nanoid::alphabet::SAFE);
+            if ExistingShareRecord::find_by_url(&url).await?.is_none() {
+                return Ok(Self {
+                    path_id,
+                    url,
+                    expires_at: None,
+                    password: None,
+                });
+            }
+
+            retry += 1;
+        }
+
+        anyhow::bail!("can't assign a unique id to share record");
+    }
 }

@@ -1,6 +1,6 @@
 use crate::{
     app, config,
-    db::{self, NewPathRecord},
+    db::{self, NewPathRecord, NewShareRecord},
     error::{AppResult, Error},
     indexing::get_progress,
     web::{Order, Sort, get_sorting},
@@ -224,6 +224,7 @@ pub(crate) fn login(error: Option<&str>, username: Option<&String>) -> Markup {
         }
     }
 }
+
 pub(crate) async fn docx_frame(path: &Path) -> AppResult<Markup> {
     let contents = tokio::fs::read(path)
         .await
@@ -578,43 +579,68 @@ fn no_preview(f: &str) -> Markup {
     }
 }
 
-pub(crate) fn share_modal(record: &ExistingPathRecord) -> Markup {
-    let id = nanoid::nanoid!(10, &nanoid::alphabet::SAFE);
+pub(crate) fn share_modal(
+    path_record: &ExistingPathRecord,
+    share_record: &NewShareRecord,
+) -> Markup {
+    let data = format!(
+        r"
+        {{
+            expiry: '',
+            url: '{}',
+            password: '',
+            protected: false,
+            get expires_at() {{
+                const epoch_ms = new Date(this.expiry).getTime();
+                if (!isNaN(epoch_ms)) {{
+                    return Math.floor(epoch_ms / 1000);
+                }}
+                return null;
+            }}
+        }}
+    ",
+        &share_record.url,
+    );
     html! {
-        dialog open x-ref="modal" x-data={"{protected: false, url: '" (id) "'}"} {
-            article {
+        dialog open x-ref="modal" x-data=(data) {
+            article "@click.outside"="$refs.modal.close()" {
                 header {
                     span {
                         "Share "
-                        code { (record.path_buf().display()) }
+                        code { (path_record.name) }
                     }
-                    button aria-label="Close" rel="prev" x-on:click="$refs.modal.open = false" {}
+                    button aria-label="Close" rel="prev" x-on:click="$refs.modal.close()" {}
                 }
                 form action="/share" hx-post="/share" hx-target="#modal" id="share-form" {
-                    input type="hidden" name="path_id" value=(record.id)
+                    input type="hidden" name="path_id" value=(share_record.path_id)
                     label {
                         "URL"
                         input name="url" type="text" required x-model="url";
                         small {
+                            (config::get().app.share_url.as_ref().unwrap_or(&String::new()))
                             "/share/"
                             span x-text="url";
                         }
                     }
                     label {
                         "Expire after"
-                        input name="expiry" type="date";
+                        template x-if="expires_at !== null" {
+                            input name="expires_at" type="hidden" x-model="expires_at";
+                        }
+                        input type="date" x-model="expiry";
                     }
                     label {
-                        input x-on:change="protected = !protected" type="checkbox" name="protected" role="switch";
+                        input x-on:change="protected = !protected" type="checkbox" role="switch";
                         "Require password"
                     }
-                    label x-show="protected" {
-                        input name="password" type="password" placeholder="Access password";
+                    template x-if="protected" {
+                        label {
+                            input name="password" type="password" placeholder="Access password";
+                        }
                     }
-
                 }
                 footer {
-                    button.secondary x-on:click="$refs.modal.open = false" { "Close" }
+                    button.secondary x-on:click="$refs.modal.close()" { "Close" }
                     button form="share-form" { "Create link" }
                 }
             }

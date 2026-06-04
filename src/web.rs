@@ -290,6 +290,28 @@ async fn serve_static_file(req: &mut Request, res: &mut Response) -> AppResult {
 }
 
 #[handler]
+async fn share_handler(req: &mut Request, res: &mut Response) -> AppResult {
+    if req.method() == salvo::http::Method::GET {
+        let path = req.query::<PathBuf>("path").ok_or(Error::NotFound)?;
+
+        let record = NewPathRecord::from(&path)
+            .find_existing(app::db())
+            .await?
+            .ok_or(Error::NotFound)?;
+
+        res.render(Text::Html(views::share_modal(&record).into_string()));
+
+        return Ok(());
+    }
+
+    if req.method() == salvo::http::Method::POST {
+        res.render(Text::Html(""));
+    }
+
+    Ok(())
+}
+
+#[handler]
 async fn sse_connected(req: &Request, res: &mut Response) -> AppResult {
     let view = req.param::<Page>("page").unwrap_or(Page::search(""));
 
@@ -393,6 +415,7 @@ pub async fn server() -> (Server<TcpAcceptor>, Router) {
         .push(Router::with_path("search").get(search_handler))
         .push(Router::with_path("preview").get(preview_handler))
         .push(Router::with_path("download").get(download_handler))
+        .push(Router::with_path("share").goal(share_handler))
         .push(
             Router::with_path("sse")
                 .get(sse_connected)

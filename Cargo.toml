@@ -36,6 +36,7 @@ notify-debouncer-full = { version = "0.8.0-rc.2", features = ["tokio"] }
 glob-match = "0.2"
 
 base64-turbo = "0.1"
+nanoid = "0.5"
 
 serde = { version = "1", features = ["derive"] }
 

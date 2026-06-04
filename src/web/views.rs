@@ -187,6 +187,7 @@ pub(crate) fn layout(title: &str, restore_from_history: bool, view: &Markup) -> 
                         }
                     }
                 }
+                div #modal {}
             }
         }
     }
@@ -345,7 +346,7 @@ fn file_row_class(record: &ExistingPathRecord) -> String {
     }
 }
 
-fn breadcrumbs(view: &View, query_string: &str, after_list: &Markup) -> Markup {
+fn breadcrumbs(view: &View, query_string: &str, menu_items: &Markup) -> Markup {
     let crumbs = view.breadcrumbs();
 
     html! {
@@ -368,7 +369,21 @@ fn breadcrumbs(view: &View, query_string: &str, after_list: &Markup) -> Markup {
                         }
                     }
                 }
-                (after_list)
+                details.dropdown x-ref="dropdown" {
+                    summary {
+                        i {}
+                    }
+                    ul {
+                        li {
+                            @let link = format!("/share?path={}", view.as_str());
+                            a.share x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
+                                i {}
+                                "Share"
+                            }
+                        }
+                        (menu_items)
+                    }
+                }
             }
         }
     }
@@ -478,24 +493,6 @@ pub(crate) fn index_progress((processed, total): (i64, i64)) -> Markup {
     }
 }
 
-fn file_dropdown_menu(file_path: &Path) -> Markup {
-    html! {
-        details.dropdown {
-            summary {
-                i {}
-            }
-            ul {
-                li {
-                    a.download href={ "/download?path=" (file_path.to_string_lossy()) } {
-                        i {}
-                        "Download"
-                    }
-                }
-            }
-        }
-    }
-}
-
 async fn file_view(view: &View, file_path: &Path, req: &Request) -> AppResult<Markup> {
     let mut queries_without_search_param = req.queries().clone();
     queries_without_search_param.remove("q");
@@ -506,8 +503,17 @@ async fn file_view(view: &View, file_path: &Path, req: &Request) -> AppResult<Ma
         .await?
         .ok_or_else(|| Error::NotFound)?;
 
+    let dl_menu_item = html! {
+        li {
+            a.download x-on:click="$refs.dropdown.open = false" href={ "/download?path=" (file_path.to_string_lossy()) } {
+                i {}
+                "Download"
+            }
+        }
+    };
+
     Ok(html! {
-        (breadcrumbs(view, &query_string, &file_dropdown_menu(file_path)))
+        (breadcrumbs(view, &query_string, &dl_menu_item))
         section #file-contents { (preview_file(file_path).await? ) }
     })
 }
@@ -567,6 +573,50 @@ fn no_preview(f: &str) -> Markup {
             h4 { "This file can't be viewed." }
             p {
                 button href={ "/download?path=" (f) } { "Download" }
+            }
+        }
+    }
+}
+
+pub(crate) fn share_modal(record: &ExistingPathRecord) -> Markup {
+    let id = nanoid::nanoid!(10, &nanoid::alphabet::SAFE);
+    html! {
+        dialog open x-ref="modal" x-data={"{protected: false, url: '" (id) "'}"} {
+            article {
+                header {
+                    span {
+                        "Share "
+                        code { (record.path_buf().display()) }
+                    }
+                    button aria-label="Close" rel="prev" x-on:click="$refs.modal.open = false" {}
+                }
+                form action="/share" hx-post="/share" hx-target="#modal" id="share-form" {
+                    input type="hidden" name="path_id" value=(record.id)
+                    label {
+                        "URL"
+                        input name="url" type="text" required x-model="url";
+                        small {
+                            "/share/"
+                            span x-text="url";
+                        }
+                    }
+                    label {
+                        "Expire after"
+                        input name="expiry" type="date";
+                    }
+                    label {
+                        input x-on:change="protected = !protected" type="checkbox" name="protected" role="switch";
+                        "Require password"
+                    }
+                    label x-show="protected" {
+                        input name="password" type="password" placeholder="Access password";
+                    }
+
+                }
+                footer {
+                    button.secondary x-on:click="$refs.modal.open = false" { "Close" }
+                    button form="share-form" { "Create link" }
+                }
             }
         }
     }

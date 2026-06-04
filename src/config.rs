@@ -58,6 +58,7 @@ pub struct App {
     pub extractor_bin: String,
     pub theme: String,
     pub cache_dir: PathBuf,
+    pub share_url: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

@@ -27,6 +27,12 @@ function timeAgo(unixTimestamp) {
   }
 }
 
+function time(unixTimestamp) {
+  const date = new Date(unixTimestamp * 1000);
+  const rtf = new Intl.DateTimeFormat();
+  return rtf.format(date);
+}
+
 htmx.on('htmx:before:history:update', () => {
   sessionStorage.setItem('scrollY', window.scrollY);
 });

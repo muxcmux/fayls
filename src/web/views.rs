@@ -1,6 +1,6 @@
 use crate::{
-    app, config,
-    db::{self, NewPathRecord, NewShareRecord},
+    config,
+    db::{self, ExistingShareRecord, NewShareRecord},
     error::{AppResult, Error},
     indexing::get_progress,
     web::{Order, Sort, get_sorting},
@@ -12,9 +12,9 @@ use std::{
 };
 
 use base64_turbo::{STANDARD, URL_SAFE_NO_PAD};
-use maud::{DOCTYPE, Markup, PreEscaped, html};
+use maud::{DOCTYPE, Markup, PreEscaped, Render, html};
 use multimap::MultiMap;
-use salvo::Request;
+use salvo::{Request, Scribe, writing::Text};
 
 use crate::db::{ExistingPathRecord, PathRecordKind};
 
@@ -40,6 +40,36 @@ impl Page {
 
     pub(crate) fn root() -> Self {
         Self { view: View::Root }
+    }
+}
+
+pub(crate) enum Message<'a> {
+    Error(&'a str),
+    Success(&'a str),
+}
+
+impl Message<'_> {
+    fn to_html(&self) -> Markup {
+        match self {
+            Self::Error(msg) => html! {
+                div.alert { (msg) }
+            },
+            Self::Success(msg) => html! {
+                div.alert.success { (msg) }
+            },
+        }
+    }
+}
+
+impl Render for Message<'_> {
+    fn render(&self) -> Markup {
+        self.to_html()
+    }
+}
+
+impl Scribe for Message<'_> {
+    fn render(self, res: &mut salvo::Response) {
+        res.render(Text::Html(self.to_html().into_string()));
     }
 }
 
@@ -347,7 +377,7 @@ fn file_row_class(record: &ExistingPathRecord) -> String {
     }
 }
 
-fn breadcrumbs(view: &View, query_string: &str, menu_items: &Markup) -> Markup {
+fn breadcrumbs(view: &View, query_string: &str) -> Markup {
     let crumbs = view.breadcrumbs();
 
     html! {
@@ -370,19 +400,27 @@ fn breadcrumbs(view: &View, query_string: &str, menu_items: &Markup) -> Markup {
                         }
                     }
                 }
-                details.dropdown x-ref="dropdown" {
-                    summary {
-                        i {}
-                    }
-                    ul {
-                        li {
-                            @let link = format!("/share?path={}", view.as_str());
-                            a.share x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
-                                i {}
-                                "Share"
+                @if matches!(view, View::File(_) | View::Dir(_)) {
+                    details.dropdown x-ref="dropdown" {
+                        summary {
+                            i {}
+                        }
+                        ul {
+                            li {
+                                @let link = format!("/share?path={}", view.as_str());
+                                a.share x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
+                                    i {}
+                                    "Share"
+                                }
+                            }
+                            li {
+                                @let link = format!("/download?path={}", view.as_str());
+                                a.download x-on:click="$refs.dropdown.open = false" href=(link) {
+                                    i {}
+                                    "Download"
+                                }
                             }
                         }
-                        (menu_items)
                     }
                 }
             }
@@ -416,7 +454,7 @@ fn file_list(
     }
 
     html! {
-        (breadcrumbs(view, &query_string, &html!{}))
+        (breadcrumbs(view, &query_string))
 
         table.striped hx-get={ "/files" (view.as_str()) (&query_string) } hx-trigger="reload-view" hx-target="#view" {
             thead hx-sse:connect={ "/sse" (view.encode()) } hx-trigger="load delay:1s" hx-config="ws.pauseOnBackground: false" {
@@ -499,22 +537,12 @@ async fn file_view(view: &View, file_path: &Path, req: &Request) -> AppResult<Ma
     queries_without_search_param.remove("q");
     let query_string = queries_to_string(&queries_without_search_param);
 
-    NewPathRecord::from(file_path)
-        .find_existing(app::db())
+    ExistingPathRecord::find_by_path(file_path)
         .await?
-        .ok_or_else(|| Error::NotFound)?;
-
-    let dl_menu_item = html! {
-        li {
-            a.download x-on:click="$refs.dropdown.open = false" href={ "/download?path=" (file_path.to_string_lossy()) } {
-                i {}
-                "Download"
-            }
-        }
-    };
+        .ok_or(Error::NotFound)?;
 
     Ok(html! {
-        (breadcrumbs(view, &query_string, &dl_menu_item))
+        (breadcrumbs(view, &query_string))
         section #file-contents { (preview_file(file_path).await? ) }
     })
 }
@@ -571,7 +599,7 @@ async fn preview_file(file_path: &Path) -> AppResult<Markup> {
 fn no_preview(f: &str) -> Markup {
     html! {
         div.no-preview {
-            h4 { "This file can't be viewed." }
+            h4 { "No preview is available for this file." }
             p {
                 button href={ "/download?path=" (f) } { "Download" }
             }
@@ -583,9 +611,11 @@ pub(crate) fn share_modal(
     path_record: &ExistingPathRecord,
     share_record: &NewShareRecord,
 ) -> Markup {
+    let base_url = config::get().app.share_url.as_deref().unwrap_or("");
     let data = format!(
         r"
         {{
+            get base_url() {{ return '{}' || window.location.origin }},
             expiry: '',
             url: '{}',
             password: '',
@@ -599,7 +629,7 @@ pub(crate) fn share_modal(
             }}
         }}
     ",
-        &share_record.url,
+        base_url, &share_record.url,
     );
     html! {
         dialog open x-ref="modal" x-data=(data) {
@@ -611,13 +641,14 @@ pub(crate) fn share_modal(
                     }
                     button aria-label="Close" rel="prev" x-on:click="$refs.modal.close()" {}
                 }
+                div #share-message {}
                 form action="/share" hx-post="/share" hx-target="#modal" id="share-form" {
-                    input type="hidden" name="path_id" value=(share_record.path_id)
+                    input type="hidden" name="path_id" value=(share_record.path_id);
                     label {
                         "URL"
-                        input name="url" type="text" required x-model="url";
+                        input name="url" required type="text" x-model="url";
                         small {
-                            (config::get().app.share_url.as_ref().unwrap_or(&String::new()))
+                            span x-text="base_url" { (base_url) }
                             "/share/"
                             span x-text="url";
                         }
@@ -635,13 +666,89 @@ pub(crate) fn share_modal(
                     }
                     template x-if="protected" {
                         label {
-                            input name="password" type="password" placeholder="Access password";
+                            input name="password" required type="password" placeholder="Access password";
                         }
                     }
                 }
                 footer {
-                    button.secondary x-on:click="$refs.modal.close()" { "Close" }
                     button form="share-form" { "Create link" }
+                }
+            }
+        }
+    }
+}
+
+pub fn shares(
+    path_record: &ExistingPathRecord,
+    shares: &[ExistingShareRecord],
+    message: Option<Message>,
+) -> Markup {
+    let base_url = config::get().app.share_url.as_deref().unwrap_or("");
+    html! {
+        dialog open x-ref="modal" x-data="{}" {
+            article "@click.outside"="$refs.modal.close()" {
+                header {
+                    span {
+                        "Shared links for "
+                        code { (path_record.name) }
+                    }
+                    button aria-label="Close" rel="prev" x-on:click="$refs.modal.close()" {}
+                }
+                div #share-message {
+                    @if let Some(m) = message {
+                        (m)
+                    }
+                }
+                @if shares.is_empty() {
+                    em.text-muted { "No share links found." }
+                } @else {
+                    table.share-links x-data={"{get base_url() { return '" (base_url) "' || window.location.origin }}"} {
+                        @let copy = r"
+                            (async () => {
+                                navigator.clipboard.writeText(base_url + url);
+                                $refs.copy.dataset.tooltip = 'Copied!';
+                                setTimeout(() => {
+                                    $refs.copy.dataset.tooltip = 'Copy link';
+                                }, 500)
+                            })()
+                        ";
+                        @for share in shares {
+                            tr x-data={"{url: '/share/" (share.url) "' }"} {
+                                td {
+                                    span x-text="base_url" { (base_url) }
+                                    "/share/"
+                                    (share.url)
+                                    br;
+
+                                    small.text-muted {
+                                        code {
+                                            "accessed " (share.accessed) " times"
+                                        }
+                                        @if share.password.is_some() {
+                                            " "
+                                                code { "protected" }
+                                        }
+                                        @if let Some(time) = share.expires_at {
+                                            " "
+                                                code {
+                                                    "expires "
+                                                        time x-data={ "{ time: time(" (time) ") }" } x-text="time" datetime=(time) { (time) }
+                                                }
+                                        }
+                                    }
+                                }
+                                td.actions {
+                                    a.copy x-ref="copy" data-tooltip="Copy link" href="#" "@click.prevent"=(copy) { i {}}
+                                    a.delete data-tooltip="Delete" href="#" hx-confirm="Are you sure?" hx-delete={ "/share/" (share.url) } hx-target="#modal" { i {}}
+                                }
+                            }
+                        }
+                    }
+                }
+                footer {
+                    button.outline hx-get={"/share?add=true&path=" (path_record.path_buf().display())} hx-target="#modal" {
+                        "+ Add shared link "
+                    }
                 }
             }
         }

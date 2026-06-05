@@ -283,6 +283,28 @@ impl ExistingPathRecord {
     pub(crate) fn is_outdated(&self, new: &NewPathRecord) -> bool {
         self.last_modified != new.last_modified
     }
+
+    pub(crate) async fn shares(&self) -> Result<Vec<ExistingShareRecord>, sqlx::Error> {
+        sqlx::query_as::<_, ExistingShareRecord>("SELECT * FROM shares WHERE path_id = ?")
+            .bind(self.id)
+            .fetch_all(app::db())
+            .await
+    }
+
+    pub(crate) async fn find_by_path(path: impl AsRef<Path>) -> Result<Option<Self>, sqlx::Error> {
+        let path = path.as_ref();
+        let name = path
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or(path.to_string_lossy().into_owned());
+        let parent = path.parent().map(|p| p.to_string_lossy().into_owned());
+
+        sqlx::query_as::<_, Self>("SELECT * FROM paths WHERE name = ? AND parent = ?")
+            .bind(name)
+            .bind(parent)
+            .fetch_optional(app::db())
+            .await
+    }
 }
 
 pub(crate) async fn list_paths(
@@ -370,16 +392,33 @@ pub(crate) struct ExistingShareRecord {
     pub(crate) id: i64,
     pub(crate) path_id: i64,
     pub(crate) url: String,
+    pub(crate) expires_at: Option<i64>,
     pub(crate) password: Option<String>,
     pub(crate) accessed: i64,
 }
 
 impl ExistingShareRecord {
-    async fn find_by_url(url: &str) -> Result<Option<Self>, sqlx::Error> {
+    pub(crate) async fn find_by_url(url: &str) -> Result<Option<Self>, sqlx::Error> {
         sqlx::query_as::<_, Self>("SELECT * FROM shares WHERE url = ? LIMIT 1")
             .bind(url)
             .fetch_optional(app::db())
             .await
+    }
+
+    pub(crate) async fn path(&self) -> Result<ExistingPathRecord, sqlx::Error> {
+        sqlx::query_as::<_, ExistingPathRecord>("SELECT * FROM paths WHERE id = ? LIMIT 1")
+            .bind(self.path_id)
+            .fetch_one(app::db())
+            .await
+    }
+
+    pub(crate) async fn destroy(self) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM shares WHERE id = ?")
+            .bind(self.id)
+            .execute(app::db())
+            .await?;
+
+        Ok(())
     }
 }
 
@@ -392,6 +431,44 @@ pub(crate) struct NewShareRecord {
 }
 
 impl NewShareRecord {
+    async fn is_valid(&self) -> anyhow::Result<()> {
+        if self
+            .password
+            .as_ref()
+            .is_some_and(std::string::String::is_empty)
+        {
+            anyhow::bail!("Password can't be empty")
+        }
+
+        if self.url.is_empty() {
+            anyhow::bail!("URL can't be empty")
+        }
+
+        if ExistingShareRecord::find_by_url(&self.url).await?.is_some() {
+            anyhow::bail!("This share URL is already taken")
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn save(self) -> anyhow::Result<ExistingShareRecord> {
+        () = self.is_valid().await?;
+        sqlx::query_as::<_, ExistingShareRecord>(
+            r"
+            INSERT INTO shares (path_id, url, expires_at, password)
+            VALUES (?, ?, ?, ?)
+            RETURNING *
+            ",
+        )
+        .bind(self.path_id)
+        .bind(&self.url)
+        .bind(self.expires_at)
+        .bind(&self.password)
+        .fetch_one(app::db())
+        .await
+        .map_err(|e| anyhow::anyhow!(e))
+    }
+
     pub(crate) async fn new(path_id: i64) -> anyhow::Result<Self> {
         const MAX_RETRIES: usize = 8;
         let mut retry = 0;

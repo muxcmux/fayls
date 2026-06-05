@@ -10,9 +10,10 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
+use crate::web::views::Message;
 use crate::{
-    app, config,
-    db::{NewPathRecord, NewShareRecord},
+    config,
+    db::{ExistingPathRecord, ExistingShareRecord, NewShareRecord},
     error::{AppResult, Error},
     web::views::Page,
 };
@@ -166,8 +167,7 @@ async fn preview_handler(req: &mut Request, res: &mut Response) -> AppResult {
         .query::<PathBuf>("path")
         .ok_or(Error::BadRequest("no path param"))?;
 
-    _ = NewPathRecord::from(&path)
-        .find_existing(app::db())
+    _ = ExistingPathRecord::find_by_path(&path)
         .await?
         .ok_or(Error::NotFound)?;
 
@@ -205,8 +205,7 @@ async fn download_handler(req: &mut Request, res: &mut Response) -> AppResult {
         .query::<&str>("path")
         .ok_or(Error::BadRequest("no path param"))?;
 
-    _ = NewPathRecord::from(path)
-        .find_existing(app::db())
+    _ = ExistingPathRecord::find_by_path(&path)
         .await?
         .ok_or(Error::NotFound)?;
 
@@ -290,30 +289,118 @@ async fn serve_static_file(req: &mut Request, res: &mut Response) -> AppResult {
 }
 
 #[handler]
-async fn share_handler(req: &mut Request, res: &mut Response) -> AppResult {
-    if req.method() == salvo::http::Method::GET {
-        let path = req.query::<PathBuf>("path").ok_or(Error::NotFound)?;
+async fn open_share_modal(req: &mut Request, res: &mut Response) -> AppResult {
+    let path = req.query::<PathBuf>("path").ok_or(Error::NotFound)?;
+    let add = req.query::<bool>("add").is_some_and(|v| v);
 
-        let path_record = NewPathRecord::from(&path)
-            .find_existing(app::db())
-            .await?
-            .ok_or(Error::NotFound)?;
+    let path_record = ExistingPathRecord::find_by_path(&path)
+        .await?
+        .ok_or(Error::NotFound)?;
 
+    let shares = path_record.shares().await?;
+    if add || shares.is_empty() {
         let share_record = NewShareRecord::new(path_record.id).await?;
 
         res.render(Text::Html(
             views::share_modal(&path_record, &share_record).into_string(),
         ));
-
-        return Ok(());
+    } else {
+        res.render(Text::Html(
+            views::shares(&path_record, &shares, None).into_string(),
+        ));
     }
 
-    if req.method() == salvo::http::Method::POST {
-        match req.parse_form::<NewShareRecord>().await {
-            Ok(record) => res.render(Text::Html("")),
-            Err(e) => res.render(Text::Html(e.to_string())),
+    Ok(())
+}
+
+#[handler]
+async fn create_share_handler(req: &mut Request, res: &mut Response) -> AppResult {
+    match req.parse_form::<NewShareRecord>().await {
+        Ok(new_record) => match new_record.save().await {
+            Ok(record) => {
+                let path = record.path().await?;
+                let shares = path.shares().await?;
+                let msg = Message::Success("Share link created successfully");
+                res.status_code(StatusCode::CREATED);
+                res.render(Text::Html(
+                    views::shares(&path, &shares, Some(msg)).into_string(),
+                ));
+            }
+            Err(e) => {
+                res.status_code(StatusCode::UNPROCESSABLE_ENTITY);
+                _ = res.add_header("HX-Retarget", "#share-message", true);
+                res.render(Message::Error(e.to_string().as_ref()));
+            }
+        },
+        Err(e) => {
+            res.status_code(StatusCode::UNPROCESSABLE_ENTITY);
+            _ = res.add_header("HX-Retarget", "#share-message", true);
+            res.render(Message::Error(e.to_string().as_ref()));
         }
     }
+
+    Ok(())
+}
+
+#[handler]
+async fn shares_handler(req: &Request, res: &mut Response) -> AppResult {
+    let path = req.query::<PathBuf>("path").ok_or(Error::NotFound)?;
+
+    let path_record = ExistingPathRecord::find_by_path(&path)
+        .await?
+        .ok_or(Error::NotFound)?;
+
+    let shares = path_record.shares().await?;
+    res.render(Text::Html(
+        views::shares(&path_record, &shares, None).into_string(),
+    ));
+
+    Ok(())
+}
+
+#[handler]
+async fn delete_share_handler(req: &Request, res: &mut Response) -> AppResult {
+    let url = req.param::<&str>("url").ok_or(Error::NotFound)?;
+
+    let share_record = ExistingShareRecord::find_by_url(url)
+        .await?
+        .ok_or(Error::NotFound)?;
+
+    let path_record = share_record.path().await?;
+    () = share_record.destroy().await?;
+
+    let shares = path_record.shares().await?;
+
+    res.render(Text::Html(
+        views::shares(
+            &path_record,
+            &shares,
+            Some(Message::Success("Share link deleted")),
+        )
+        .into_string(),
+    ));
+
+    Ok(())
+}
+
+#[handler]
+async fn shared_link_handler(req: &Request, res: &mut Response) -> AppResult {
+    let url = req.param::<&str>("url").ok_or(Error::NotFound)?;
+    let share_record = ExistingShareRecord::find_by_url(url)
+        .await?
+        .ok_or(Error::NotFound)?;
+
+    let path = share_record.path().await?.path_buf();
+    let page = views::page(Page::from(&path), req).await?;
+
+    res.render(Text::Html(
+        if is_hx(req) {
+            page
+        } else {
+            views::layout("Fayls", history_restore_requested(req), &page)
+        }
+        .into_string(),
+    ));
 
     Ok(())
 }
@@ -422,12 +509,13 @@ pub async fn server() -> (Server<TcpAcceptor>, Router) {
         .push(Router::with_path("search").get(search_handler))
         .push(Router::with_path("preview").get(preview_handler))
         .push(Router::with_path("download").get(download_handler))
-        .push(Router::with_path("share").goal(share_handler))
         .push(
-            Router::with_path("sse")
-                .get(sse_connected)
-                .push(Router::with_path("{*page}").get(sse_connected)),
-        );
+            Router::with_path("share")
+                .get(open_share_modal)
+                .post(create_share_handler)
+                .push(Router::with_path("{url}").delete(delete_share_handler)),
+        )
+        .push(Router::with_path("shares").get(shares_handler));
 
     let router = Router::new()
         .hoop(session)
@@ -440,6 +528,12 @@ pub async fn server() -> (Server<TcpAcceptor>, Router) {
         .push(Router::with_path("health").get(healthcheck))
         .push(Router::with_path("static/{*file}").get(serve_static_file))
         .push(Router::with_path("login").goal(login))
+        .push(Router::with_path("share/{url}").get(shared_link_handler))
+        .push(
+            Router::with_path("sse")
+                .get(sse_connected)
+                .push(Router::with_path("{*page}").get(sse_connected)),
+        )
         .push(protected_routes);
 
     let server = Server::new(acceptor);

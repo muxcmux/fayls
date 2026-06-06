@@ -1,3 +1,8 @@
+use argon2::{
+    Argon2,
+    password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
+};
+
 use std::{
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
@@ -13,7 +18,7 @@ use sqlx::{
 use crate::{
     app, dir_size,
     indexing::IndexEvent,
-    web::{Order, Sort},
+    web::{Access, Order, SharedAccess, Sort},
 };
 
 fn bind_vec<'q, DB, O, B>(
@@ -332,6 +337,12 @@ pub(crate) async fn list_paths(
 }
 
 const FILENAME_QUERY: &str = "SELECT * FROM paths WHERE name LIKE '%' || ? || '%' LIMIT 20";
+const SCOPED_FILENAME_QUERY: &str = r"
+    SELECT * FROM paths WHERE parent IS NOT NULL
+    AND substr(parent, 1, length(?2)) = ?2
+    AND name LIKE '%' || ?1 || '%'
+    LIMIT 20
+";
 
 const FTS_QUERY: &str = r"
     WITH
@@ -367,6 +378,44 @@ const FTS_QUERY: &str = r"
         rank ASC
     LIMIT 20
 ";
+const SCOPED_FTS_QUERY: &str = r"
+    WITH
+    name_hits AS (
+        SELECT
+            f.*,
+            1 AS result_group,
+            NULL AS rank
+        FROM paths AS f
+        WHERE f.parent IS NOT NULL
+          AND substr(f.parent, 1, length(?2)) = ?2
+          AND f.name LIKE '%' || ?1 || '%'
+    ),
+
+    fts_hits AS (
+        SELECT
+            f.*,
+            2 AS result_group,
+            bm25(content_index, 10.0, 5.0) AS rank
+        FROM content_index
+        JOIN paths AS f
+          ON f.id = content_index.rowid
+        WHERE content_index MATCH ?1
+          AND f.parent IS NOT NULL
+          AND substr(f.parent, 1, length(?2)) = ?2
+          AND f.id NOT IN (SELECT id FROM name_hits)
+    )
+
+    SELECT *
+    FROM (
+        SELECT * FROM name_hits
+        UNION ALL
+        SELECT * FROM fts_hits
+    )
+    ORDER BY
+        result_group ASC,
+        rank ASC
+    LIMIT 20
+";
 
 async fn is_valid_fts(query: &str) -> bool {
     sqlx::query("SELECT content FROM fts_query_validator WHERE content MATCH ?")
@@ -376,15 +425,29 @@ async fn is_valid_fts(query: &str) -> bool {
         .is_ok()
 }
 
-pub(crate) async fn search(term: &str) -> Result<Vec<ExistingPathRecord>, sqlx::Error> {
-    sqlx::query_as::<_, ExistingPathRecord>(if is_valid_fts(term).await {
-        FTS_QUERY
+pub(crate) async fn search(
+    term: &str,
+    access: &Access,
+) -> Result<Vec<ExistingPathRecord>, sqlx::Error> {
+    let query = if is_valid_fts(term).await {
+        if let Access::Shared(SharedAccess { path_buf, .. }) = access {
+            sqlx::query_as::<_, ExistingPathRecord>(SCOPED_FTS_QUERY)
+                .bind(term)
+                .bind(path_buf.to_string_lossy())
+        } else {
+            sqlx::query_as::<_, ExistingPathRecord>(FTS_QUERY).bind(term)
+        }
     } else {
-        FILENAME_QUERY
-    })
-    .bind(term)
-    .fetch_all(app::db())
-    .await
+        if let Access::Shared(SharedAccess { path_buf, .. }) = access {
+            sqlx::query_as::<_, ExistingPathRecord>(SCOPED_FILENAME_QUERY)
+                .bind(term)
+                .bind(path_buf.to_string_lossy())
+        } else {
+            sqlx::query_as::<_, ExistingPathRecord>(FILENAME_QUERY).bind(term)
+        }
+    };
+
+    query.fetch_all(app::db()).await
 }
 
 #[derive(FromRow)]
@@ -398,6 +461,17 @@ pub(crate) struct ExistingShareRecord {
 }
 
 impl ExistingShareRecord {
+    pub(crate) async fn access(&mut self) -> Result<(), sqlx::Error> {
+        self.accessed += 1;
+        sqlx::query("UPDATE shares SET accessed = ? WHERE id = ?")
+            .bind(self.accessed)
+            .bind(self.id)
+            .execute(app::db())
+            .await?;
+
+        Ok(())
+    }
+
     pub(crate) async fn find_by_url(url: &str) -> Result<Option<Self>, sqlx::Error> {
         sqlx::query_as::<_, Self>("SELECT * FROM shares WHERE url = ? LIMIT 1")
             .bind(url)
@@ -451,8 +525,20 @@ impl NewShareRecord {
         Ok(())
     }
 
-    pub(crate) async fn save(self) -> anyhow::Result<ExistingShareRecord> {
-        () = self.is_valid().await?;
+    pub(crate) async fn save(mut self) -> anyhow::Result<ExistingShareRecord> {
+        self.is_valid().await?;
+
+        if let Some(password) = self.password {
+            let salt = SaltString::generate(&mut OsRng);
+            let argon2 = Argon2::default();
+            self.password = Some(
+                argon2
+                    .hash_password(password.as_bytes(), &salt)
+                    .map_err(|e| anyhow::anyhow!(e))?
+                    .to_string(),
+            );
+        }
+
         sqlx::query_as::<_, ExistingShareRecord>(
             r"
             INSERT INTO shares (path_id, url, expires_at, password)

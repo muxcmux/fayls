@@ -29,8 +29,7 @@ function timeAgo(unixTimestamp) {
 
 function time(unixTimestamp) {
   const date = new Date(unixTimestamp * 1000);
-  const rtf = new Intl.DateTimeFormat();
-  return rtf.format(date);
+  return date.toUTCString();
 }
 
 htmx.on('htmx:before:history:update', () => {

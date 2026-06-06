@@ -7,13 +7,16 @@ directory index (mod_dir), but with search functionality.
 
 ## Features
 
-- lists dirs and files
-- preview some files - images, pdf (uses browser pdf viewer), docx, and utf8 text
-- sort by name/last modified date/size
-- live server updates with sse
-- search by filename or contents - indexes text from pdf, office docs and utf8
-  readable files (have to be whitelisted first though). does ocr for images
-  with tesseract
+- Lists dirs and files
+- Preview some files - images, pdf (uses browser pdf viewer), docx, epubs, and utf8 text (more
+  coming)
+- Sort by name/last modified date/size
+- Live server updates with sse
+- Search by filename or contents - indexes text from pdf, office docs, ebooks, and utf8 readable
+  files. Does ocr for images with tesseract (can be very slow if you run a potato, so remove the
+  image extensions from the `indexing.index_contents_whitelist` default config key).
+- Create shared links to share files/folders. You can configure the base domain of the shared links
+  to point to a different domain with the `app.share_url` setting
 
 ## Run with Docker
 
@@ -32,14 +35,16 @@ app:
 Add all the dirs you want to index/list under `sources`. Avoid adding subdirectories of already
 added ones, e.g. `/Downloads`, and then `/Downloads/Games`.
 
-Fayls only supports basic auth, which is useless if not behind tls terminated
-connection, so make sure you run this behind caddy or somethig that handles
-certs and https. Obviously choose a different user/pass combo.
+Fayls only supports basic auth, which is useless if not behind tls terminated connection, so make
+sure you run this behind caddy/nginx or somethig that handles certs and https.
+
+*NOTE*: If you prefer not to store the admin creds in the yaml config file directly, you can pass
+them from the environment. You can actually pass any config as env vars prefixed with `FAYLS_`, so
+for the admin creds that would be `FAYLS_AUTH_USER` and `FAYLS_AUTH_PASS`
 
 If you fail to supply this minimal config, the container will not be able to start.
 
 Since we are running with docker, `sources` here will just be paths the docker image sees.
-
 
 ```sh
 $: docker run -p 8080:8080 \
@@ -51,8 +56,8 @@ $: docker run -p 8080:8080 \
 ```
 
 Mount every corresponding entry in `sources` as a volume, and also the current directory to
-`/fayls/data`: this is where fayls looks for the default config and will create its database
-and cache.
+`/fayls/data`: this is where fayls looks for the default config and will create its database and
+cache.
 
 That's it. Now go to http://localhost:8080 and browse.
 

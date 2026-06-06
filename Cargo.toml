@@ -29,14 +29,13 @@ anyhow = "1"
 thiserror = "2"
 tempfile = "3"
 
-subtle = "2"
-
 walkdir = "2"
 notify-debouncer-full = { version = "0.8.0-rc.2", features = ["tokio"] }
 glob-match = "0.2"
 
 base64-turbo = "0.1"
 nanoid = "0.5"
+argon2 = "0.5"
 
 serde = { version = "1", features = ["derive"] }
 

@@ -1,3 +1,7 @@
+use argon2::{
+    Argon2, PasswordHasher,
+    password_hash::{SaltString, rand_core::OsRng},
+};
 use config::{Environment, File, FileFormat};
 use glob_match::glob_match;
 use rand::RngExt;
@@ -125,7 +129,7 @@ impl Config {
             }
         }
 
-        config = config.add_source(Environment::with_prefix("FAYLS"));
+        config = config.add_source(Environment::with_prefix("FAYLS").separator("_"));
 
         config.build()?.try_deserialize::<Self>()
     }
@@ -133,6 +137,7 @@ impl Config {
 
 static CONFIG: OnceLock<Config> = OnceLock::new();
 static SECRET: OnceLock<Vec<u8>> = OnceLock::new();
+static ADMIN_AUTH: OnceLock<String> = OnceLock::new();
 
 #[allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 pub fn load() -> Result<(), config::ConfigError> {
@@ -165,5 +170,27 @@ pub(crate) fn secret() -> &'static [u8] {
         rand::rng().fill(&mut bytes[..]);
         _ = std::fs::write(&sf, &bytes);
         bytes
+    })
+}
+
+pub(crate) fn admin_auth() -> &'static str {
+    ADMIN_AUTH.get_or_init(|| {
+        let file = get().app.cache_dir.join("auth");
+
+        if let Ok(existing) = std::fs::read_to_string(&file) {
+            return existing;
+        }
+
+        let auth = format!("{}:{}", get().auth.user, get().auth.pass);
+
+        let salt = SaltString::generate(&mut OsRng);
+        let argon2 = Argon2::default();
+        let hashed_auth = argon2
+            .hash_password(auth.as_bytes(), &salt)
+            .expect("can't hash admin creds")
+            .to_string();
+
+        _ = std::fs::write(&file, &hashed_auth);
+        hashed_auth
     })
 }

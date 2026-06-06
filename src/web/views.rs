@@ -3,7 +3,7 @@ use crate::{
     db::{self, ExistingShareRecord, NewShareRecord},
     error::{AppResult, Error},
     indexing::get_progress,
-    web::{Order, Sort, get_sorting},
+    web::{Access, Order, Sort, get_sorting},
 };
 use std::{
     ffi::OsString,
@@ -118,23 +118,100 @@ impl<'de> serde::Deserialize<'de> for Page {
     }
 }
 
+struct Breadcrumb {
+    text: Markup,
+    link: Option<String>,
+}
+
+impl Breadcrumb {
+    fn admin_root() -> Self {
+        Self {
+            text: html! {
+                svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" {
+                    path d="M8.354 1.146a.5.5 0 0 0-.708 0l-6 6A.5.5 0 0 0 1.5 7.5v7a.5.5 0 0 0 .5.5h4.5a.5.5 0 0 0 .5-.5v-4h2v4a.5.5 0 0 0 .5.5H14a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.146-.354L13 5.793V2.5a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5v1.293zM2.5 14V7.707l5.5-5.5 5.5 5.5V14H10v-4a.5.5 0 0 0-.5-.5h-3a.5.5 0 0 0-.5.5v4z" {}
+                }
+            },
+            link: Some("/".into()),
+        }
+    }
+
+    fn shared_root(path: &Path) -> Self {
+        Self {
+            link: Some(format!("/files{}", path.to_string_lossy())),
+            text: html! {
+                (path
+                    .file_name()
+                    .map(|f| f.to_string_lossy())
+                    .unwrap_or(path.to_string_lossy())
+                )
+            },
+        }
+    }
+}
+
+impl<T: AsRef<Path>> From<T> for Breadcrumb {
+    fn from(value: T) -> Self {
+        Self {
+            text: html! {
+                (value
+                    .as_ref()
+                    .file_name()
+                    .map(|f| f.to_string_lossy())
+                    .unwrap_or(value.as_ref().to_string_lossy()))
+            },
+            link: Some(format!(
+                "/files{}",
+                value.as_ref().to_string_lossy().into_owned()
+            )),
+        }
+    }
+}
+
 impl View {
-    fn breadcrumbs(&self) -> Vec<PathBuf> {
+    fn breadcrumbs(&self, access: &Access) -> Vec<Breadcrumb> {
         match self {
             View::Dir(p) | View::File(p) => {
                 let mut parts = vec![];
                 for path in p.ancestors() {
+                    if !access.is_allowed(path) {
+                        break;
+                    }
+
                     let is_root = config::get().app.canonicalized_sources().contains(path);
-                    parts.push(path);
+                    if access.is_allowed(path) {
+                        parts.push(Breadcrumb::from(path));
+                    }
 
                     if is_root {
                         break;
                     }
                 }
-                parts.into_iter().rev().map(PathBuf::from).collect()
+
+                if matches!(access, Access::Admin) {
+                    parts.push(Breadcrumb::admin_root());
+                }
+
+                parts.into_iter().rev().collect()
             }
-            View::Search(_) => vec![PathBuf::from("/Search results")],
-            View::Root => vec![PathBuf::from("/")],
+            View::Search(_) => {
+                let mut parts = Vec::with_capacity(2);
+                parts.push(match access {
+                    Access::Admin => Breadcrumb::admin_root(),
+                    Access::Shared(shared_access) => {
+                        Breadcrumb::shared_root(&shared_access.path_buf)
+                    }
+                });
+
+                parts.push(Breadcrumb {
+                    text: html! { "Search results" },
+                    link: None,
+                });
+
+                parts
+            }
+            View::Root => {
+                vec![Breadcrumb::admin_root()]
+            }
         }
     }
 
@@ -183,7 +260,12 @@ fn queries_to_string(queries: &MultiMap<String, String>) -> String {
     format!("?{}", ser.finish())
 }
 
-pub(crate) fn layout(title: &str, restore_from_history: bool, view: &Markup) -> Markup {
+pub(crate) fn layout(
+    title: &str,
+    restore_from_history: bool,
+    view: &Markup,
+    access: &Access,
+) -> Markup {
     html! {
         (DOCTYPE)
         html {
@@ -203,10 +285,12 @@ pub(crate) fn layout(title: &str, restore_from_history: bool, view: &Markup) -> 
                 main #container.container-fluid x-data="{ search_q: new URLSearchParams(location.search).get('q') }" {
                     form #search hx-get="/search" hx-push-url="true" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" {
                         input type="search" x-model="search_q" name="q" placeholder="Search...";
-                        a href="/logout" hx-delete="/logout" hx-target="#container" {
-                            svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 16 16" {
-                                path d="M7.5 1v7h1V1z" {}
-                                path d="M3 8.812a5 5 0 0 1 2.578-4.375l-.485-.874A6 6 0 1 0 11 3.616l-.501.865A5 5 0 1 1 3 8.812" {}
+                        @if matches!(access, Access::Admin) {
+                            a href="/logout" hx-delete="/logout" hx-target="#container" {
+                                svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 16 16" {
+                                    path d="M7.5 1v7h1V1z" {}
+                                    path d="M3 8.812a5 5 0 0 1 2.578-4.375l-.485-.874A6 6 0 1 0 11 3.616l-.501.865A5 5 0 1 1 3 8.812" {}
+                                }
                             }
                         }
                     }
@@ -223,7 +307,7 @@ pub(crate) fn layout(title: &str, restore_from_history: bool, view: &Markup) -> 
     }
 }
 
-pub(crate) fn login(error: Option<&str>, username: Option<&String>) -> Markup {
+pub(crate) fn login(message: Option<Message>, username: Option<&String>) -> Markup {
     html! {
         (DOCTYPE)
         html {
@@ -240,13 +324,13 @@ pub(crate) fn login(error: Option<&str>, username: Option<&String>) -> Markup {
                         header {
                             strong { "Login" }
                         }
-                        form action="/login" method="POST" {
-                            input type="text" name="username" value=[username] placeholder="user";
-                            input type="password" name="password" placeholder="password";
-                            input type="submit" value="Login";
+                        @if message.is_some() {
+                            (message.unwrap())
                         }
-                        @if error.is_some() {
-                            div.alert { (error.unwrap()) }
+                        form action="/login" method="POST" {
+                            input type="text" autofocus required name="username" value=[username] placeholder="user";
+                            input type="password" required name="password" placeholder="password";
+                            input type="submit" value="Login";
                         }
                     }
                 }
@@ -309,7 +393,7 @@ pub(crate) async fn docx_frame(path: &Path) -> AppResult<Markup> {
     })
 }
 
-pub(crate) async fn page(page: Page, req: &Request) -> AppResult<Markup> {
+pub(crate) async fn page(page: Page, req: &Request, access: &Access) -> AppResult<Markup> {
     Ok(match &page.view {
         View::Root => {
             let (sort, order) = get_sorting(req);
@@ -323,18 +407,18 @@ pub(crate) async fn page(page: Page, req: &Request) -> AppResult<Markup> {
 
             let items = db::list_paths(&roots, &sort, &order).await?;
 
-            file_list(&page.view, &items, get_progress().await?, req)
+            file_list(&page.view, &items, get_progress().await?, req, access)
         }
         View::Dir(path_buf) => {
             let (sort, order) = get_sorting(req);
             let items = db::list_paths(&[&path_buf.to_string_lossy()], &sort, &order).await?;
-            file_list(&page.view, &items, get_progress().await?, req)
+            file_list(&page.view, &items, get_progress().await?, req, access)
         }
-        View::File(path_buf) => file_view(&page.view, path_buf, req).await?,
+        View::File(path_buf) => file_view(&page.view, path_buf, req, access).await?,
         View::Search(term) => {
-            let items = db::search(term).await?;
+            let items = db::search(term, access).await?;
 
-            file_list(&page.view, &items, get_progress().await?, req)
+            file_list(&page.view, &items, get_progress().await?, req, access)
         }
     })
 }
@@ -377,25 +461,18 @@ fn file_row_class(record: &ExistingPathRecord) -> String {
     }
 }
 
-fn breadcrumbs(view: &View, query_string: &str) -> Markup {
-    let crumbs = view.breadcrumbs();
+fn breadcrumbs(view: &View, query_string: &str, access: &Access) -> Markup {
+    let crumbs = view.breadcrumbs(access);
 
     html! {
         @if !crumbs.is_empty() {
             nav {
                 ul #breadcrumbs {
-                    li {
-                        a href={ "/" (query_string) } x-on:click="search_q = ''" hx-get={ "/" (query_string) } hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" hx-push-url="true" {
-                            svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" {
-                                path d="M8.354 1.146a.5.5 0 0 0-.708 0l-6 6A.5.5 0 0 0 1.5 7.5v7a.5.5 0 0 0 .5.5h4.5a.5.5 0 0 0 .5-.5v-4h2v4a.5.5 0 0 0 .5.5H14a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.146-.354L13 5.793V2.5a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5v1.293zM2.5 14V7.707l5.5-5.5 5.5 5.5V14H10v-4a.5.5 0 0 0-.5-.5h-3a.5.5 0 0 0-.5.5v4z" {}
-                            }
-                        }
-                    }
-                    @for path in crumbs {
-                        @let link = format!("/files{}{}", path.to_string_lossy(), query_string);
+                    @for crumb in crumbs {
+                        @let link = format!("{}{}", crumb.link.unwrap_or_default(), query_string);
                         li {
-                            a href=(link) hx-get=(link) hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" hx-push-url="true" {
-                                (path.file_name().map_or(String::new(), |f| f.to_string_lossy().to_string()))
+                            a href=(link) hx-get=(link) x-on:click="search_q = ''" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" hx-push-url="true" {
+                                (crumb.text)
                             }
                         }
                     }
@@ -406,11 +483,13 @@ fn breadcrumbs(view: &View, query_string: &str) -> Markup {
                             i {}
                         }
                         ul {
-                            li {
-                                @let link = format!("/share?path={}", view.as_str());
-                                a.share x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
-                                    i {}
-                                    "Share"
+                            @if matches!(access, Access::Admin) {
+                                li {
+                                    @let link = format!("/share?path={}", view.as_str());
+                                    a.share x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
+                                        i {}
+                                        "Share"
+                                    }
                                 }
                             }
                             li {
@@ -433,6 +512,7 @@ fn file_list(
     files: &[ExistingPathRecord],
     progress: (i64, i64),
     req: &Request,
+    access: &Access,
 ) -> Markup {
     let show_full_paths = matches!(view, &View::Search(_));
 
@@ -454,7 +534,7 @@ fn file_list(
     }
 
     html! {
-        (breadcrumbs(view, &query_string))
+        (breadcrumbs(view, &query_string, access))
 
         table.striped hx-get={ "/files" (view.as_str()) (&query_string) } hx-trigger="reload-view" hx-target="#view" {
             thead hx-sse:connect={ "/sse" (view.encode()) } hx-trigger="load delay:1s" hx-config="ws.pauseOnBackground: false" {
@@ -532,7 +612,12 @@ pub(crate) fn index_progress((processed, total): (i64, i64)) -> Markup {
     }
 }
 
-async fn file_view(view: &View, file_path: &Path, req: &Request) -> AppResult<Markup> {
+async fn file_view(
+    view: &View,
+    file_path: &Path,
+    req: &Request,
+    access: &Access,
+) -> AppResult<Markup> {
     let mut queries_without_search_param = req.queries().clone();
     queries_without_search_param.remove("q");
     let query_string = queries_to_string(&queries_without_search_param);
@@ -542,7 +627,7 @@ async fn file_view(view: &View, file_path: &Path, req: &Request) -> AppResult<Ma
         .ok_or(Error::NotFound)?;
 
     Ok(html! {
-        (breadcrumbs(view, &query_string))
+        (breadcrumbs(view, &query_string, access))
         section #file-contents { (preview_file(file_path).await? ) }
     })
 }
@@ -621,7 +706,10 @@ pub(crate) fn share_modal(
             password: '',
             protected: false,
             get expires_at() {{
-                const epoch_ms = new Date(this.expiry).getTime();
+                if (this.expiry === '') {{
+                    return null
+                }}
+                const epoch_ms = new Date(this.expiry + 'T23:59:59.000Z').getTime();
                 if (!isNaN(epoch_ms)) {{
                     return Math.floor(epoch_ms / 1000);
                 }}
@@ -748,6 +836,40 @@ pub fn shares(
                 footer {
                     button.outline hx-get={"/share?add=true&path=" (path_record.path_buf().display())} hx-target="#modal" {
                         "+ Add shared link "
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn shared_link_password(
+    record: &ExistingShareRecord,
+    message: Option<Message>,
+) -> Markup {
+    html! {
+        (DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                link rel="stylesheet" href={ "https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/" (config::get().app.theme) ".min.css" };
+                link rel="stylesheet" href="/static/app.css";
+                title { "Password required" }
+            }
+            body {
+                dialog open {
+                    article {
+                        header {
+                            strong { "Password required" }
+                        }
+                        @if message.is_some() {
+                            (message.unwrap())
+                        }
+                        form action={"/share/" (record.url)} method="POST" {
+                            input type="password" autofocus name="password" required placeholder="password";
+                            input type="submit" value="Continue";
+                        }
                     }
                 }
             }

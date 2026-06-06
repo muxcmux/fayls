@@ -1,13 +1,15 @@
 pub(crate) mod views;
 
+use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use futures_util::StreamExt;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
     sync::{LazyLock, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::web::views::Message;
@@ -23,8 +25,36 @@ use salvo::{
     prelude::*,
     session::{CookieStore, Session, SessionDepotExt},
 };
-use subtle::ConstantTimeEq;
 use tokio::sync::mpsc::{self, UnboundedSender};
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct SharedAccess {
+    pub(crate) expires_at: Option<i64>,
+    pub(crate) path_buf: PathBuf,
+}
+#[derive(Serialize, Deserialize)]
+pub(crate) enum Access {
+    Admin,
+    Shared(SharedAccess),
+}
+
+impl Access {
+    pub(crate) fn is_allowed(&self, path: impl AsRef<Path>) -> bool {
+        match self {
+            Self::Admin => true,
+            Self::Shared(SharedAccess {
+                expires_at,
+                path_buf,
+            }) => {
+                if ensure_shared_access_hasnt_expired(*expires_at).is_err() {
+                    return false;
+                }
+
+                path.as_ref().starts_with(path_buf)
+            }
+        }
+    }
+}
 
 fn is_hx(req: &Request) -> bool {
     req.header::<bool>("hx-request").is_some_and(|v| v)
@@ -101,7 +131,7 @@ async fn healthcheck() -> &'static str {
 }
 
 #[handler]
-async fn path_handler(req: &mut Request, res: &mut Response) -> AppResult {
+async fn path_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> AppResult {
     // unwrapping here is safe because of the routes guard where
     // we handle the /files path by serving root dirs
     let path = req
@@ -111,13 +141,16 @@ async fn path_handler(req: &mut Request, res: &mut Response) -> AppResult {
 
     let path = PathBuf::from(path);
 
-    let page = views::page(Page::from(&path), req).await?;
+    ensure_path_is_accessible(path.as_ref(), depot)?;
+
+    let access = access(depot)?;
+    let page = views::page(Page::from(&path), req, &access).await?;
 
     res.render(Text::Html(
         if is_hx(req) {
             page
         } else {
-            views::layout("Fayls", history_restore_requested(req), &page)
+            views::layout("Fayls", history_restore_requested(req), &page, &access)
         }
         .into_string(),
     ));
@@ -126,14 +159,15 @@ async fn path_handler(req: &mut Request, res: &mut Response) -> AppResult {
 }
 
 #[handler]
-async fn list_roots_handler(req: &Request, res: &mut Response) -> AppResult {
-    let page = views::page(Page::root(), req).await?;
+async fn list_roots_handler(depot: &Depot, req: &Request, res: &mut Response) -> AppResult {
+    let access = access(depot)?;
+    let page = views::page(Page::root(), req, &access).await?;
 
     res.render(Text::Html(
         if is_hx(req) {
             page
         } else {
-            views::layout("Fayls", history_restore_requested(req), &page)
+            views::layout("Fayls", history_restore_requested(req), &page, &access)
         }
         .into_string(),
     ));
@@ -142,18 +176,19 @@ async fn list_roots_handler(req: &Request, res: &mut Response) -> AppResult {
 }
 
 #[handler]
-async fn search_handler(req: &mut Request, res: &mut Response) -> AppResult {
+async fn search_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> AppResult {
     let term = req
         .query::<&str>("q")
         .ok_or(Error::BadRequest("no query param"))?;
 
-    let page = views::page(Page::search(term), req).await?;
+    let access = access(depot)?;
+    let page = views::page(Page::search(term), req, &access).await?;
 
     res.render(Text::Html(
         if is_hx(req) {
             page
         } else {
-            views::layout("Fayls", history_restore_requested(req), &page)
+            views::layout("Fayls", history_restore_requested(req), &page, &access)
         }
         .into_string(),
     ));
@@ -162,10 +197,12 @@ async fn search_handler(req: &mut Request, res: &mut Response) -> AppResult {
 }
 
 #[handler]
-async fn preview_handler(req: &mut Request, res: &mut Response) -> AppResult {
+async fn preview_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> AppResult {
     let path = req
         .query::<PathBuf>("path")
         .ok_or(Error::BadRequest("no path param"))?;
+
+    ensure_path_is_accessible(path.as_ref(), depot)?;
 
     _ = ExistingPathRecord::find_by_path(&path)
         .await?
@@ -200,10 +237,12 @@ async fn preview_docx_file(path: &Path, res: &mut Response) -> AppResult {
 }
 
 #[handler]
-async fn download_handler(req: &mut Request, res: &mut Response) -> AppResult {
+async fn download_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> AppResult {
     let path = req
-        .query::<&str>("path")
+        .query::<&Path>("path")
         .ok_or(Error::BadRequest("no path param"))?;
+
+    ensure_path_is_accessible(path, depot)?;
 
     _ = ExistingPathRecord::find_by_path(&path)
         .await?
@@ -217,12 +256,56 @@ async fn download_handler(req: &mut Request, res: &mut Response) -> AppResult {
     Ok(())
 }
 
+fn ensure_shared_access_hasnt_expired(expires_at: Option<i64>) -> AppResult {
+    if let Some(expires_at) = expires_at {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|e| anyhow::anyhow!(e))?
+            .as_secs()
+            .cast_signed();
+
+        if expires_at < now {
+            return Err(Error::Forbidden);
+        }
+    }
+
+    Ok(())
+}
+
+fn access(depot: &Depot) -> AppResult<Access> {
+    let session = depot.session().ok_or(Error::Forbidden)?;
+    session.get::<Access>("access").ok_or(Error::Forbidden)
+}
+
+fn ensure_path_is_accessible(path: &Path, depot: &Depot) -> AppResult {
+    if access(depot)?.is_allowed(path) {
+        return Ok(());
+    }
+
+    Err(Error::Forbidden)
+}
+
 #[handler]
-async fn ensure_authenticated(depot: &Depot, ctrl: &mut FlowCtrl, res: &mut Response) -> AppResult {
+async fn ensure_some_access(depot: &Depot, ctrl: &mut FlowCtrl, res: &mut Response) -> AppResult {
     if depot
         .session()
-        .is_some_and(|session| session.get_raw("username").is_some())
+        .is_some_and(|session| session.get::<Access>("access").is_some())
     {
+        Ok(())
+    } else {
+        ctrl.skip_rest();
+        res.render(Redirect::other("/login"));
+        Ok(())
+    }
+}
+
+#[handler]
+async fn ensure_admin_access(depot: &Depot, ctrl: &mut FlowCtrl, res: &mut Response) -> AppResult {
+    if depot.session().is_some_and(|session| {
+        session
+            .get::<Access>("access")
+            .is_some_and(|access| matches!(access, Access::Admin))
+    }) {
         Ok(())
     } else {
         ctrl.skip_rest();
@@ -240,25 +323,29 @@ pub async fn login(req: &mut Request, depot: &mut Depot, res: &mut Response) -> 
         if user.is_none() || pass.is_none() {
             res.status_code(StatusCode::UNAUTHORIZED);
             res.render(Text::Html(
-                views::login(Some("Bad credentials"), None).into_string(),
+                views::login(Some(Message::Error("Bad credentials")), None).into_string(),
             ));
             return Ok(());
         }
 
-        let a = format!("{}:{}", config::get().auth.user, config::get().auth.pass);
-        let b = format!("{}:{}", user.as_ref().unwrap(), pass.unwrap());
+        let auth = format!("{}:{}", user.as_ref().unwrap(), pass.unwrap());
 
-        if (!a.as_bytes().ct_eq(b.as_bytes())).into() {
+        let hash = PasswordHash::new(config::admin_auth()).map_err(|_| Error::Forbidden)?;
+
+        if Argon2::default()
+            .verify_password(auth.as_bytes(), &hash)
+            .is_err()
+        {
             res.status_code(StatusCode::UNAUTHORIZED);
             res.render(Text::Html(
-                views::login(Some("Bad credentials"), user.as_ref()).into_string(),
+                views::login(Some(Message::Error("Bad credentials")), user.as_ref()).into_string(),
             ));
             return Ok(());
         }
 
         let mut session = Session::new();
         session
-            .insert("username", user)
+            .insert("access", Access::Admin)
             .map_err(|e| anyhow::anyhow!(e))?;
         depot.set_session(session);
         res.render(Redirect::other("/"));
@@ -367,7 +454,7 @@ async fn delete_share_handler(req: &Request, res: &mut Response) -> AppResult {
         .ok_or(Error::NotFound)?;
 
     let path_record = share_record.path().await?;
-    () = share_record.destroy().await?;
+    share_record.destroy().await?;
 
     let shares = path_record.shares().await?;
 
@@ -384,23 +471,77 @@ async fn delete_share_handler(req: &Request, res: &mut Response) -> AppResult {
 }
 
 #[handler]
-async fn shared_link_handler(req: &Request, res: &mut Response) -> AppResult {
-    let url = req.param::<&str>("url").ok_or(Error::NotFound)?;
-    let share_record = ExistingShareRecord::find_by_url(url)
+async fn shared_link_handler(
+    depot: &mut Depot,
+    req: &mut Request,
+    res: &mut Response,
+) -> AppResult {
+    async fn grant_access(
+        record: &mut ExistingShareRecord,
+        res: &mut Response,
+        depot: &mut Depot,
+    ) -> AppResult {
+        let path = record.path().await?;
+
+        let mut session = Session::new();
+        session
+            .insert(
+                "access",
+                Access::Shared(SharedAccess {
+                    expires_at: record.expires_at,
+                    path_buf: path.path_buf(),
+                }),
+            )
+            .map_err(|e| anyhow::anyhow!(e))?;
+        depot.set_session(session);
+
+        record.access().await?;
+
+        res.render(Redirect::other(format!(
+            "/files{}",
+            path.path_buf().display()
+        )));
+
+        Ok(())
+    }
+
+    let url = req.param::<String>("url").ok_or(Error::NotFound)?;
+    let mut share_record = ExistingShareRecord::find_by_url(&url)
         .await?
         .ok_or(Error::NotFound)?;
 
-    let path = share_record.path().await?.path_buf();
-    let page = views::page(Page::from(&path), req).await?;
+    ensure_shared_access_hasnt_expired(share_record.expires_at).map_err(|_| Error::NotFound)?;
 
-    res.render(Text::Html(
-        if is_hx(req) {
-            page
-        } else {
-            views::layout("Fayls", history_restore_requested(req), &page)
+    if let Some(ref share_password) = share_record.password {
+        let mut msg = None;
+
+        if req.method() == salvo::http::Method::POST {
+            let password = req
+                .form::<String>("password")
+                .await
+                .ok_or(Error::Forbidden)?;
+
+            let hash = PasswordHash::new(share_password).map_err(|_| Error::Forbidden)?;
+
+            if Argon2::default()
+                .verify_password(password.as_bytes(), &hash)
+                .is_ok()
+            {
+                grant_access(&mut share_record, res, depot).await?;
+                return Ok(());
+            }
+
+            msg = Some(Message::Error("Invalid password"));
         }
-        .into_string(),
-    ));
+
+        res.render(Text::Html(
+            views::shared_link_password(&share_record, msg).into_string(),
+        ));
+
+        return Ok(());
+    }
+
+    grant_access(&mut share_record, res, depot).await?;
 
     Ok(())
 }
@@ -498,17 +639,17 @@ pub async fn server() -> (Server<TcpAcceptor>, Router) {
         .expect("failed to build session store");
 
     let protected_routes = Router::new()
-        .hoop(ensure_authenticated)
-        .push(Router::with_path("logout").delete(logout))
-        .get(list_roots_handler)
-        .push(
-            Router::with_path("files")
-                .get(list_roots_handler)
-                .push(Router::with_path("{*path}").get(path_handler)),
-        )
+        .hoop(ensure_some_access)
+        .push(Router::with_path("files").push(Router::with_path("{*path}").get(path_handler)))
         .push(Router::with_path("search").get(search_handler))
         .push(Router::with_path("preview").get(preview_handler))
-        .push(Router::with_path("download").get(download_handler))
+        .push(Router::with_path("download").get(download_handler));
+
+    let admin_routes = Router::new()
+        .hoop(ensure_admin_access)
+        .get(list_roots_handler)
+        .push(Router::with_path("files").get(list_roots_handler))
+        .push(Router::with_path("logout").delete(logout))
         .push(
             Router::with_path("share")
                 .get(open_share_modal)
@@ -528,13 +669,18 @@ pub async fn server() -> (Server<TcpAcceptor>, Router) {
         .push(Router::with_path("health").get(healthcheck))
         .push(Router::with_path("static/{*file}").get(serve_static_file))
         .push(Router::with_path("login").goal(login))
-        .push(Router::with_path("share/{url}").get(shared_link_handler))
+        .push(
+            Router::with_path("share/{url}")
+                .get(shared_link_handler)
+                .post(shared_link_handler),
+        )
         .push(
             Router::with_path("sse")
                 .get(sse_connected)
                 .push(Router::with_path("{*page}").get(sse_connected)),
         )
-        .push(protected_routes);
+        .push(protected_routes)
+        .push(admin_routes);
 
     let server = Server::new(acceptor);
     (server, router)

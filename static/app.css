@@ -474,7 +474,7 @@ body > main {
   color: var(--fg);
   background: linear-gradient(120deg, var(--bg-from), var(--bg-to));
   padding: 1rem 1.5rem;
-  margin-bottom: 2rem;
+  margin-bottom: 1rem;
   border-radius: var(--border-radius);
 
   max-height: 15rem;

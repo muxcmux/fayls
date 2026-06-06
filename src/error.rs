@@ -7,8 +7,8 @@ use serde::Serialize;
 #[derive(thiserror::Error, Debug)]
 pub(crate) enum Error {
     /// Use for 401 responses
-    #[error("Authentication required")]
-    Unauthorized,
+    // #[error("Authentication required")]
+    // Unauthorized,
     /// Use for 403 responses
     #[error("You are not allowed to perform this action")]
     Forbidden,
@@ -17,8 +17,8 @@ pub(crate) enum Error {
     NotFound,
     /// Use when request is correct, but contains semantic errors,
     /// e.g. fields fail validation criteria
-    #[error("{}", .0)]
-    UnprocessableEntity(&'static str),
+    // #[error("{}", .0)]
+    // UnprocessableEntity(&'static str),
     /// Wrapper around database errors which returns 404s
     /// when rows can't be found and 500s for anything else
     #[error("{}",
@@ -43,10 +43,10 @@ pub(crate) enum Error {
 impl Error {
     fn status_code(&self) -> StatusCode {
         match self {
-            Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            // Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::Forbidden => StatusCode::FORBIDDEN,
             Self::NotFound => StatusCode::NOT_FOUND,
-            Self::UnprocessableEntity(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            // Self::UnprocessableEntity(_) => StatusCode::UNPROCESSABLE_ENTITY,
             Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Sqlx(e) => match e {
@@ -63,12 +63,12 @@ impl Serialize for Error {
         S: serde::Serializer,
     {
         match self {
-            Error::Unauthorized => serializer.serialize_unit_variant("Error", 0, "Unauthorized"),
+            // Error::Unauthorized => serializer.serialize_unit_variant("Error", 0, "Unauthorized"),
             Error::Forbidden => serializer.serialize_unit_variant("Error", 1, "Forbidden"),
             Error::NotFound => serializer.serialize_unit_variant("Error", 2, "NotFound"),
-            Error::UnprocessableEntity(_) => {
-                serializer.serialize_unit_variant("Error", 3, "UnprocessableEntity")
-            }
+            // Error::UnprocessableEntity(_) => {
+            //     serializer.serialize_unit_variant("Error", 3, "UnprocessableEntity")
+            // }
             Error::Sqlx(e) => {
                 tracing::error!("sqlx error: {e}");
                 serializer.serialize_unit_variant("Error", 4, "Sqlx")

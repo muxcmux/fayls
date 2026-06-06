@@ -1,7 +1,7 @@
 # Fayls
 
 Fayls is a minimal self-hosted file browser - an alternative to `python -m http.server` or Apache's
-directory index (mod_dir), but with search functionality.
+directory index (mod_dir), but with search and sharing functionality.
 
 <img width="1020" alt="Fayls browsing screenshot" src="https://github.com/user-attachments/assets/08ea9e94-48c1-47f5-8578-c9a3300a86e5" />
 

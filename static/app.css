@@ -12,6 +12,27 @@
   }
 }
 
+@media (max-width: 640px) {
+  #view {
+    table, footer {
+      margin-left: -1rem;
+      width: calc(100% + 2rem);
+
+      .last_modified, .size {
+        display: none;
+      }
+    }
+  }
+
+  #breadcrumbs {
+    li {
+      &:not(:nth-last-child(-n+2)) {
+        display: none;
+      }
+    }
+  }
+}
+
 pre {
   font-size: 13px;
 }

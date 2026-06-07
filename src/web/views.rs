@@ -137,7 +137,7 @@ impl Breadcrumb {
 
     fn shared_root(path: &Path) -> Self {
         Self {
-            link: Some(format!("/shared/files{}", path.to_string_lossy())),
+            link: Some(path.to_string_lossy().to_string()),
             text: html! {
                 (path
                     .file_name()
@@ -555,7 +555,7 @@ fn file_list(
                 } @else {
                     @for file in files {
                         @let link = format!("{}{}{}", base_files_path, file.path_buf().to_string_lossy(), &query_string);
-                        (row(file, &link, show_full_paths))
+                        (row(file, &link, show_full_paths, access))
                     }
                 }
             }
@@ -581,7 +581,7 @@ fn file_list(
     }
 }
 
-fn row(record: &ExistingPathRecord, link: &str, show_full_paths: bool) -> Markup {
+fn row(record: &ExistingPathRecord, link: &str, show_full_paths: bool, access: &Access) -> Markup {
     html! {
         tr.(file_row_class(record)) x-on:click="search_q = ''" hx-get=(link) hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" hx-push-url="true" {
             td.icon { i {} }
@@ -589,7 +589,7 @@ fn row(record: &ExistingPathRecord, link: &str, show_full_paths: bool) -> Markup
                 span {
                     (record.name)
                     @if show_full_paths {
-                        em { (record.parent.as_deref().unwrap_or("")) }
+                        em { (record.access_scoped_parent(access).as_deref().unwrap_or("")) }
                     }
                 }
             }

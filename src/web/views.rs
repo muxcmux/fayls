@@ -3,7 +3,7 @@ use crate::{
     db::{self, ExistingShareRecord, NewShareRecord},
     error::{AppResult, Error},
     indexing::get_progress,
-    web::{Access, Order, Sort, get_sorting},
+    web::{Access, Order, Sort, access_url, get_sorting},
 };
 use std::{
     ffi::OsString,
@@ -137,7 +137,7 @@ impl Breadcrumb {
 
     fn shared_root(path: &Path) -> Self {
         Self {
-            link: Some(format!("/files{}", path.to_string_lossy())),
+            link: Some(format!("/shared/files{}", path.to_string_lossy())),
             text: html! {
                 (path
                     .file_name()
@@ -159,10 +159,7 @@ impl<T: AsRef<Path>> From<T> for Breadcrumb {
                     .map(|f| f.to_string_lossy())
                     .unwrap_or(value.as_ref().to_string_lossy()))
             },
-            link: Some(format!(
-                "/files{}",
-                value.as_ref().to_string_lossy().into_owned()
-            )),
+            link: Some(value.as_ref().to_string_lossy().into_owned()),
         }
     }
 }
@@ -283,7 +280,7 @@ pub(crate) fn layout(
             }
             body {
                 main #container.container-fluid x-data="{ search_q: new URLSearchParams(location.search).get('q') }" {
-                    form #search hx-get="/search" hx-push-url="true" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" {
+                    form #search hx-get=(access_url("/search", access)) hx-push-url="true" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" {
                         input type="search" x-model="search_q" name="q" placeholder="Search...";
                         @if matches!(access, Access::Admin) {
                             a href="/logout" hx-delete="/logout" hx-target="#container" {
@@ -469,7 +466,7 @@ fn breadcrumbs(view: &View, query_string: &str, access: &Access) -> Markup {
             nav {
                 ul #breadcrumbs {
                     @for crumb in crumbs {
-                        @let link = format!("{}{}", crumb.link.unwrap_or_default(), query_string);
+                        @let link = access_url(&format!("/files{}{}", crumb.link.unwrap_or_default(), query_string), access);
                         li {
                             a href=(link) hx-get=(link) x-on:click="search_q = ''" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" hx-push-url="true" {
                                 (crumb.text)
@@ -493,7 +490,7 @@ fn breadcrumbs(view: &View, query_string: &str, access: &Access) -> Markup {
                                 }
                             }
                             li {
-                                @let link = format!("/download?path={}", view.as_str());
+                                @let link = format!("{}{}", access_url("/download?path=", access), view.as_str());
                                 a.download x-on:click="$refs.dropdown.open = false" href=(link) {
                                     i {}
                                     "Download"
@@ -524,6 +521,9 @@ fn file_list(
     let mut total_dirs = 0;
     let mut total_size = 0;
 
+    let base_files_path = access_url("/files", access);
+    let base_sse_path = access_url("/sse", access);
+
     for f in files {
         total_size += f.size;
         match f.kind {
@@ -536,8 +536,8 @@ fn file_list(
     html! {
         (breadcrumbs(view, &query_string, access))
 
-        table.striped hx-get={ "/files" (view.as_str()) (&query_string) } hx-trigger="reload-view" hx-target="#view" {
-            thead hx-sse:connect={ "/sse" (view.encode()) } hx-trigger="load delay:1s" hx-config="ws.pauseOnBackground: false" {
+        table.striped hx-get={ (base_files_path) (view.as_str()) (&query_string) } hx-trigger="reload-view" hx-target="#view" {
+            thead hx-sse:connect={ (base_sse_path) (view.encode()) } hx-trigger="load delay:1s" hx-config="ws.pauseOnBackground: false" {
                 tr {
                     th { }
                     @let (sort, order) = get_sorting(req);
@@ -554,7 +554,7 @@ fn file_list(
                     }
                 } @else {
                     @for file in files {
-                        @let link = format!("/files{}{}", file.path_buf().to_string_lossy(), &query_string);
+                        @let link = format!("{}{}{}", base_files_path, file.path_buf().to_string_lossy(), &query_string);
                         (row(file, &link, show_full_paths))
                     }
                 }
@@ -628,11 +628,11 @@ async fn file_view(
 
     Ok(html! {
         (breadcrumbs(view, &query_string, access))
-        section #file-contents { (preview_file(file_path).await? ) }
+        section #file-contents { (preview_file(file_path, access).await? ) }
     })
 }
 
-async fn preview_file(file_path: &Path) -> AppResult<Markup> {
+async fn preview_file(file_path: &Path, access: &Access) -> AppResult<Markup> {
     let f = file_path.to_string_lossy();
     let ext = file_path
         .extension()
@@ -642,28 +642,28 @@ async fn preview_file(file_path: &Path) -> AppResult<Markup> {
     let markup = match ext.to_ascii_lowercase().as_ref() {
         "png" | "jpeg" | "jpg" | "gif" | "webp" | "svg" | "bmp" => {
             html! {
-                img src={ "/preview?path=" (f) };
+                img src={ (access_url("/preview?path=", access)) (f) };
             }
         }
         "html" => {
             html! {
-                iframe sandbox width="100%" height="100%" src={ "/preview?path=" (f) } {}
+                iframe sandbox width="100%" height="100%" src={ (access_url("/preview?path=", access)) (f) } {}
             }
         }
         "pdf" | "docx" => {
             html! {
-                iframe width="100%" height="100%" src={ "/preview?path=" (f) } {}
+                iframe width="100%" height="100%" src={ (access_url("/preview?path=", access)) (f) } {}
             }
         }
         "epub" => {
             html! {
-                iframe width="100%" height="100%" src={ "/static/vendor/epub/index.html?book=/preview?path=" (f) "&force_inline=true" } {}
+                iframe width="100%" height="100%" src={ "/static/vendor/epub/index.html?book=" (access_url("/preview?path=", access)) (f) "&force_inline=true" } {}
             }
         }
         _ => {
             let filesize = file_path.metadata().map_or(0, |m| m.len());
             if filesize > config::get().preview.max_unknown_file_size {
-                return Ok(no_preview(f.as_ref()));
+                return Ok(no_preview(f.as_ref(), access));
             }
 
             if let Ok(contents) = tokio::fs::read_to_string(file_path).await {
@@ -673,7 +673,7 @@ async fn preview_file(file_path: &Path) -> AppResult<Markup> {
                     }
                 }
             } else {
-                no_preview(f.as_ref())
+                no_preview(f.as_ref(), access)
             }
         }
     };
@@ -681,12 +681,12 @@ async fn preview_file(file_path: &Path) -> AppResult<Markup> {
     Ok(markup)
 }
 
-fn no_preview(f: &str) -> Markup {
+fn no_preview(f: &str, access: &Access) -> Markup {
     html! {
         div.no-preview {
             h4 { "No preview is available for this file." }
             p {
-                button href={ "/download?path=" (f) } { "Download" }
+                button href={ (access_url("/download?path=", access)) (f) } { "Download" }
             }
         }
     }
@@ -737,7 +737,7 @@ pub(crate) fn share_modal(
                         input name="url" required type="text" x-model="url";
                         small {
                             span x-text="base_url" { (base_url) }
-                            "/share/"
+                            "/shared/link/"
                             span x-text="url";
                         }
                     }
@@ -766,7 +766,7 @@ pub(crate) fn share_modal(
     }
 }
 
-pub fn shares(
+pub(crate) fn shares(
     path_record: &ExistingPathRecord,
     shares: &[ExistingShareRecord],
     message: Option<Message>,
@@ -801,11 +801,10 @@ pub fn shares(
                             })()
                         ";
                         @for share in shares {
-                            tr x-data={"{url: '/share/" (share.url) "' }"} {
+                            tr x-data={"{url: '/shared/link/" (share.url) "' }"} {
                                 td {
                                     span x-text="base_url" { (base_url) }
-                                    "/share/"
-                                    (share.url)
+                                    span x-text="url" { (share.url)}
                                     br;
 
                                     small.text-muted {

@@ -315,7 +315,7 @@ async fn ensure_admin_access(depot: &Depot, ctrl: &mut FlowCtrl, res: &mut Respo
 }
 
 #[handler]
-pub async fn login(req: &mut Request, depot: &mut Depot, res: &mut Response) -> AppResult {
+async fn login(req: &mut Request, depot: &mut Depot, res: &mut Response) -> AppResult {
     if req.method() == salvo::http::Method::POST {
         let user = req.form::<String>("username").await;
         let pass = req.form::<String>("password").await;
@@ -357,7 +357,7 @@ pub async fn login(req: &mut Request, depot: &mut Depot, res: &mut Response) -> 
 }
 
 #[handler]
-pub async fn logout(depot: &mut Depot, res: &mut Response) {
+async fn logout(depot: &mut Depot, res: &mut Response) {
     if let Some(session) = depot.session_mut() {
         session.remove("username");
     }
@@ -498,7 +498,7 @@ async fn shared_link_handler(
         record.access().await?;
 
         res.render(Redirect::other(format!(
-            "/files{}",
+            "/shared/files{}",
             path.path_buf().display()
         )));
 
@@ -631,21 +631,15 @@ fn broadcast(event: &Event) {
     }
 }
 
-pub async fn server() -> (Server<TcpAcceptor>, Router) {
-    let acceptor = TcpListener::new(config::get().server.addr()).bind().await;
+pub(crate) fn access_url(path: &str, access: &Access) -> String {
+    match access {
+        Access::Admin => path.into(),
+        Access::Shared(_) => format!("/shared{path}"),
+    }
+}
 
-    let session = SessionHandler::builder(CookieStore::new(), config::secret())
-        .build()
-        .expect("failed to build session store");
-
-    let protected_routes = Router::new()
-        .hoop(ensure_some_access)
-        .push(Router::with_path("files").push(Router::with_path("{*path}").get(path_handler)))
-        .push(Router::with_path("search").get(search_handler))
-        .push(Router::with_path("preview").get(preview_handler))
-        .push(Router::with_path("download").get(download_handler));
-
-    let admin_routes = Router::new()
+fn admin_routes() -> Router {
+    Router::new()
         .hoop(ensure_admin_access)
         .get(list_roots_handler)
         .push(Router::with_path("files").get(list_roots_handler))
@@ -656,7 +650,29 @@ pub async fn server() -> (Server<TcpAcceptor>, Router) {
                 .post(create_share_handler)
                 .push(Router::with_path("{url}").delete(delete_share_handler)),
         )
-        .push(Router::with_path("shares").get(shares_handler));
+        .push(Router::with_path("shares").get(shares_handler))
+}
+
+fn protected_routes() -> Router {
+    Router::new()
+        .hoop(ensure_some_access)
+        .push(Router::with_path("files").push(Router::with_path("{*path}").get(path_handler)))
+        .push(Router::with_path("search").get(search_handler))
+        .push(Router::with_path("preview").get(preview_handler))
+        .push(Router::with_path("download").get(download_handler))
+        .push(
+            Router::with_path("sse")
+                .get(sse_connected)
+                .push(Router::with_path("{*page}").get(sse_connected)),
+        )
+}
+
+pub(crate) async fn server() -> (Server<TcpAcceptor>, Router) {
+    let acceptor = TcpListener::new(config::get().server.addr()).bind().await;
+
+    let session = SessionHandler::builder(CookieStore::new(), config::secret())
+        .build()
+        .expect("failed to build session store");
 
     let router = Router::new()
         .hoop(session)
@@ -670,17 +686,16 @@ pub async fn server() -> (Server<TcpAcceptor>, Router) {
         .push(Router::with_path("static/{*file}").get(serve_static_file))
         .push(Router::with_path("login").goal(login))
         .push(
-            Router::with_path("share/{url}")
-                .get(shared_link_handler)
-                .post(shared_link_handler),
+            Router::with_path("shared")
+                .push(
+                    Router::with_path("link/{url}")
+                        .get(shared_link_handler)
+                        .post(shared_link_handler),
+                )
+                .push(protected_routes()),
         )
-        .push(
-            Router::with_path("sse")
-                .get(sse_connected)
-                .push(Router::with_path("{*page}").get(sse_connected)),
-        )
-        .push(protected_routes)
-        .push(admin_routes);
+        .push(protected_routes())
+        .push(admin_routes());
 
     let server = Server::new(acceptor);
     (server, router)

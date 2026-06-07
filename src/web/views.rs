@@ -3,20 +3,51 @@ use crate::{
     db::{self, ExistingShareRecord, NewShareRecord},
     error::{AppResult, Error},
     indexing::get_progress,
-    web::{Access, Order, Sort, access_url, get_sorting},
+    web::{Access, Order, SharedAccess, Sort, access_scoped_path, get_sorting},
 };
-use std::{
-    ffi::OsString,
-    os::unix::ffi::OsStringExt,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
-use base64_turbo::{STANDARD, URL_SAFE_NO_PAD};
+use base64_turbo::STANDARD;
 use maud::{DOCTYPE, Markup, PreEscaped, Render, html};
 use multimap::MultiMap;
 use salvo::{Request, Scribe, writing::Text};
 
 use crate::db::{ExistingPathRecord, PathRecordKind};
+
+fn access_base_url(path: &str, access: &Access) -> String {
+    match access {
+        Access::Admin => path.into(),
+        Access::Shared(_) => format!("/shared{path}"),
+    }
+}
+
+fn files_url(path: &str, access: &Access) -> String {
+    access_base_url(
+        &format!("/files{}", access_scoped_path(path, access)),
+        access,
+    )
+}
+
+fn download_url(path: &str, access: &Access) -> String {
+    access_base_url(
+        &format!("/download?path={}", access_scoped_path(path, access)),
+        access,
+    )
+}
+
+fn sse_url(path: &str, access: &Access) -> String {
+    access_base_url(
+        &format!("/sse?path={}", access_scoped_path(path, access)),
+        access,
+    )
+}
+
+fn preview_url(path: &str, access: &Access) -> String {
+    access_base_url(
+        &format!("/preview?path={}", access_scoped_path(path, access)),
+        access,
+    )
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum View {
@@ -98,29 +129,9 @@ impl<T: AsRef<Path>> From<T> for Page {
     }
 }
 
-impl<'de> serde::Deserialize<'de> for Page {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let encoded = String::deserialize(deserializer)?;
-
-        if encoded.is_empty() {
-            return Ok(Self::search(""));
-        }
-
-        let decoded = URL_SAFE_NO_PAD
-            .decode(encoded)
-            .map_err(serde::de::Error::custom)?;
-
-        let path = PathBuf::from(OsString::from_vec(decoded));
-        Ok(Self::from(path))
-    }
-}
-
 struct Breadcrumb {
     text: Markup,
-    link: Option<String>,
+    unscoped_path: Option<String>,
 }
 
 impl Breadcrumb {
@@ -131,35 +142,7 @@ impl Breadcrumb {
                     path d="M8.354 1.146a.5.5 0 0 0-.708 0l-6 6A.5.5 0 0 0 1.5 7.5v7a.5.5 0 0 0 .5.5h4.5a.5.5 0 0 0 .5-.5v-4h2v4a.5.5 0 0 0 .5.5H14a.5.5 0 0 0 .5-.5v-7a.5.5 0 0 0-.146-.354L13 5.793V2.5a.5.5 0 0 0-.5-.5h-1a.5.5 0 0 0-.5.5v1.293zM2.5 14V7.707l5.5-5.5 5.5 5.5V14H10v-4a.5.5 0 0 0-.5-.5h-3a.5.5 0 0 0-.5.5v4z" {}
                 }
             },
-            link: Some("/".into()),
-        }
-    }
-
-    fn shared_root(path: &Path) -> Self {
-        Self {
-            link: Some(path.to_string_lossy().to_string()),
-            text: html! {
-                (path
-                    .file_name()
-                    .map(|f| f.to_string_lossy())
-                    .unwrap_or(path.to_string_lossy())
-                )
-            },
-        }
-    }
-}
-
-impl<T: AsRef<Path>> From<T> for Breadcrumb {
-    fn from(value: T) -> Self {
-        Self {
-            text: html! {
-                (value
-                    .as_ref()
-                    .file_name()
-                    .map(|f| f.to_string_lossy())
-                    .unwrap_or(value.as_ref().to_string_lossy()))
-            },
-            link: Some(value.as_ref().to_string_lossy().into_owned()),
+            unscoped_path: Some("/".into()),
         }
     }
 }
@@ -175,9 +158,15 @@ impl View {
                     }
 
                     let is_root = config::get().app.canonicalized_sources().contains(path);
-                    if access.is_allowed(path) {
-                        parts.push(Breadcrumb::from(path));
-                    }
+
+                    parts.push(Breadcrumb {
+                        text: html! {
+                            (path.file_name()
+                                .map(|f| f.to_string_lossy())
+                                .unwrap_or(path.to_string_lossy()))
+                        },
+                        unscoped_path: Some(path.to_string_lossy().into()),
+                    });
 
                     if is_root {
                         break;
@@ -194,14 +183,21 @@ impl View {
                 let mut parts = Vec::with_capacity(2);
                 parts.push(match access {
                     Access::Admin => Breadcrumb::admin_root(),
-                    Access::Shared(shared_access) => {
-                        Breadcrumb::shared_root(&shared_access.path_buf)
-                    }
+                    Access::Shared(SharedAccess { path_buf, .. }) => Breadcrumb {
+                        unscoped_path: Some(path_buf.to_string_lossy().into()),
+                        text: html! {
+                            (path_buf
+                             .file_name()
+                             .map(|f| f.to_string_lossy())
+                             .unwrap_or(path_buf.to_string_lossy())
+                            )
+                        },
+                    },
                 });
 
                 parts.push(Breadcrumb {
                     text: html! { "Search results" },
-                    link: None,
+                    unscoped_path: None,
                 });
 
                 parts
@@ -212,16 +208,12 @@ impl View {
         }
     }
 
-    fn as_str(&self) -> &str {
+    fn path(&self) -> &str {
         match self {
             View::Dir(p) | View::File(p) => p.to_str().unwrap_or(""),
             View::Search(_) => "",
             View::Root => "/",
         }
-    }
-
-    fn encode(&self) -> String {
-        format!("/{}", URL_SAFE_NO_PAD.encode(self.as_str()))
     }
 }
 
@@ -280,7 +272,7 @@ pub(crate) fn layout(
             }
             body {
                 main #container.container-fluid x-data="{ search_q: new URLSearchParams(location.search).get('q') }" {
-                    form #search hx-get=(access_url("/search", access)) hx-push-url="true" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" {
+                    form #search hx-get=(access_base_url("/search", access)) hx-push-url="true" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" {
                         input type="search" x-model="search_q" name="q" placeholder="Search...";
                         @if matches!(access, Access::Admin) {
                             a href="/logout" hx-delete="/logout" hx-target="#container" {
@@ -466,7 +458,7 @@ fn breadcrumbs(view: &View, query_string: &str, access: &Access) -> Markup {
             nav {
                 ul #breadcrumbs {
                     @for crumb in crumbs {
-                        @let link = access_url(&format!("/files{}{}", crumb.link.unwrap_or_default(), query_string), access);
+                        @let link = files_url(&format!("{}{}", crumb.unscoped_path.unwrap_or_default(), query_string), access);
                         li {
                             a href=(link) hx-get=(link) x-on:click="search_q = ''" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" hx-push-url="true" {
                                 (crumb.text)
@@ -482,7 +474,7 @@ fn breadcrumbs(view: &View, query_string: &str, access: &Access) -> Markup {
                         ul {
                             @if matches!(access, Access::Admin) {
                                 li {
-                                    @let link = format!("/share?path={}", view.as_str());
+                                    @let link = format!("/share?path={}", view.path());
                                     a.share x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
                                         i {}
                                         "Share"
@@ -490,8 +482,7 @@ fn breadcrumbs(view: &View, query_string: &str, access: &Access) -> Markup {
                                 }
                             }
                             li {
-                                @let link = format!("{}{}", access_url("/download?path=", access), view.as_str());
-                                a.download x-on:click="$refs.dropdown.open = false" href=(link) {
+                                a.download x-on:click="$refs.dropdown.open = false" href=(download_url(view.path(), access)) {
                                     i {}
                                     "Download"
                                 }
@@ -521,9 +512,6 @@ fn file_list(
     let mut total_dirs = 0;
     let mut total_size = 0;
 
-    let base_files_path = access_url("/files", access);
-    let base_sse_path = access_url("/sse", access);
-
     for f in files {
         total_size += f.size;
         match f.kind {
@@ -536,8 +524,8 @@ fn file_list(
     html! {
         (breadcrumbs(view, &query_string, access))
 
-        table.striped hx-get={ (base_files_path) (view.as_str()) (&query_string) } hx-trigger="reload-view" hx-target="#view" {
-            thead hx-sse:connect={ (base_sse_path) (view.encode()) } hx-trigger="load delay:1s" hx-config="ws.pauseOnBackground: false" {
+        table.striped hx-get={ (files_url(view.path(), access)) (&query_string) } hx-trigger="reload-view" hx-target="#view" {
+            thead hx-sse:connect={ (sse_url(view.path(), access)) } hx-trigger="load delay:1s" hx-config="ws.pauseOnBackground: false" {
                 tr {
                     th { }
                     @let (sort, order) = get_sorting(req);
@@ -554,7 +542,7 @@ fn file_list(
                     }
                 } @else {
                     @for file in files {
-                        @let link = format!("{}{}{}", base_files_path, file.path_buf().to_string_lossy(), &query_string);
+                        @let link = format!("{}{}", files_url(&file.path_buf().to_string_lossy().clone(), access), &query_string);
                         (row(file, &link, show_full_paths, access))
                     }
                 }
@@ -574,8 +562,11 @@ fn file_list(
                     " files, "
                 }
             (format_size(total_size)) " total "
-            span #index-progress {
-                (index_progress(progress))
+
+            @if matches!(access, Access::Admin) {
+                span #index-progress {
+                    (index_progress(progress))
+                }
             }
         }
     }
@@ -589,7 +580,7 @@ fn row(record: &ExistingPathRecord, link: &str, show_full_paths: bool, access: &
                 span {
                     (record.name)
                     @if show_full_paths {
-                        em { (record.access_scoped_parent(access).as_deref().unwrap_or("")) }
+                        em { (access_scoped_path(record.parent.as_deref().unwrap_or("/"), access)) }
                     }
                 }
             }
@@ -642,22 +633,22 @@ async fn preview_file(file_path: &Path, access: &Access) -> AppResult<Markup> {
     let markup = match ext.to_ascii_lowercase().as_ref() {
         "png" | "jpeg" | "jpg" | "gif" | "webp" | "svg" | "bmp" => {
             html! {
-                img src={ (access_url("/preview?path=", access)) (f) };
+                img src={ (preview_url(f.as_ref(), access)) };
             }
         }
         "html" => {
             html! {
-                iframe sandbox width="100%" height="100%" src={ (access_url("/preview?path=", access)) (f) } {}
+                iframe sandbox width="100%" height="100%" src={ (preview_url(f.as_ref(), access)) } {}
             }
         }
         "pdf" | "docx" => {
             html! {
-                iframe width="100%" height="100%" src={ (access_url("/preview?path=", access)) (f) } {}
+                iframe width="100%" height="100%" src={ (preview_url(f.as_ref(), access)) } {}
             }
         }
         "epub" => {
             html! {
-                iframe width="100%" height="100%" src={ "/static/vendor/epub/index.html?book=" (access_url("/preview?path=", access)) (f) "&force_inline=true" } {}
+                iframe width="100%" height="100%" src={ "/static/vendor/epub/index.html?book=" (preview_url(f.as_ref(), access)) "&force_inline=true" } {}
             }
         }
         _ => {
@@ -686,7 +677,7 @@ fn no_preview(f: &str, access: &Access) -> Markup {
         div.no-preview {
             h4 { "No preview is available for this file." }
             p {
-                button href={ (access_url("/download?path=", access)) (f) } { "Download" }
+                button href={ (download_url(f, access)) } { "Download" }
             }
         }
     }

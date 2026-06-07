@@ -195,16 +195,6 @@ impl NewPathRecord {
 }
 
 impl ExistingPathRecord {
-    pub(crate) fn access_scoped_parent(&self, access: &Access) -> Option<&str> {
-        match access {
-            Access::Admin => self.parent.as_deref(),
-            Access::Shared(SharedAccess { path_buf, .. }) => self
-                .parent
-                .as_deref()
-                .and_then(|s| s.strip_prefix(path_buf.to_string_lossy().as_ref())),
-        }
-    }
-
     pub(crate) fn path_buf(&self) -> PathBuf {
         match &self.parent {
             Some(p) => Path::new(p).join(&self.name),

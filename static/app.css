@@ -82,11 +82,11 @@ body > main {
   }
 
   .no-preview {
-    padding: 5rem;
+    padding: 5rem 1rem 0;
     text-align: center;
 
     h4 {
-      margin: 3rem 3rem 2rem;
+      margin: 3rem 0 2rem;
     }
   }
 }

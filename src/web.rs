@@ -7,7 +7,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use std::{
     collections::HashMap,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     sync::{LazyLock, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -26,6 +26,19 @@ use salvo::{
     session::{CookieStore, Session, SessionDepotExt},
 };
 use tokio::sync::mpsc::{self, UnboundedSender};
+
+pub(crate) fn access_scoped_path(path: &str, access: &Access) -> String {
+    match access {
+        Access::Admin => path.into(),
+        Access::Shared(SharedAccess { path_buf, .. }) => match path_buf.parent() {
+            Some(parent) => match path.strip_prefix(parent.to_string_lossy().as_ref()) {
+                Some(p) => p.into(),
+                None => path.into(),
+            },
+            None => path.into(),
+        },
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 pub(crate) struct SharedAccess {
@@ -139,9 +152,9 @@ async fn path_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> A
         .map(|p| format!("/{p}"))
         .expect("this can't happen");
 
-    let path = PathBuf::from(path);
+    let mut path = PathBuf::from(path);
 
-    ensure_path_is_accessible(path.as_ref(), depot)?;
+    ensure_path_is_accessible(&mut path, depot)?;
 
     let access = access(depot)?;
     let page = views::page(Page::from(&path), req, &access).await?;
@@ -198,11 +211,11 @@ async fn search_handler(depot: &Depot, req: &mut Request, res: &mut Response) ->
 
 #[handler]
 async fn preview_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> AppResult {
-    let path = req
+    let mut path = req
         .query::<PathBuf>("path")
         .ok_or(Error::BadRequest("no path param"))?;
 
-    ensure_path_is_accessible(path.as_ref(), depot)?;
+    ensure_path_is_accessible(&mut path, depot)?;
 
     _ = ExistingPathRecord::find_by_path(&path)
         .await?
@@ -238,11 +251,11 @@ async fn preview_docx_file(path: &Path, res: &mut Response) -> AppResult {
 
 #[handler]
 async fn download_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> AppResult {
-    let path = req
-        .query::<&Path>("path")
+    let mut path = req
+        .query::<PathBuf>("path")
         .ok_or(Error::BadRequest("no path param"))?;
 
-    ensure_path_is_accessible(path, depot)?;
+    ensure_path_is_accessible(&mut path, depot)?;
 
     _ = ExistingPathRecord::find_by_path(&path)
         .await?
@@ -277,12 +290,22 @@ fn access(depot: &Depot) -> AppResult<Access> {
     session.get::<Access>("access").ok_or(Error::Forbidden)
 }
 
-fn ensure_path_is_accessible(path: &Path, depot: &Depot) -> AppResult {
-    if access(depot)?.is_allowed(path) {
-        return Ok(());
+fn ensure_path_is_accessible(requested_path: &mut PathBuf, depot: &Depot) -> AppResult {
+    let access = access(depot)?;
+
+    if let Access::Shared(SharedAccess { path_buf, .. }) = &access {
+        let real_path = requested_path
+            .components()
+            .filter(|c| !matches!(c, Component::RootDir | Component::Prefix(_)))
+            .collect::<PathBuf>();
+        *requested_path = path_buf.parent().ok_or(Error::Forbidden)?.join(real_path);
     }
 
-    Err(Error::Forbidden)
+    if !access.is_allowed(&*requested_path) {
+        return Err(Error::Forbidden);
+    }
+
+    Ok(())
 }
 
 #[handler]
@@ -484,23 +507,22 @@ async fn shared_link_handler(
         let path = record.path().await?;
 
         let mut session = Session::new();
+        let access = Access::Shared(SharedAccess {
+            expires_at: record.expires_at,
+            path_buf: path.path_buf(),
+        });
+
+        let path_buf = path.path_buf();
+        let redirect_path = access_scoped_path(path_buf.to_str().unwrap_or(""), &access);
+
         session
-            .insert(
-                "access",
-                Access::Shared(SharedAccess {
-                    expires_at: record.expires_at,
-                    path_buf: path.path_buf(),
-                }),
-            )
+            .insert("access", access)
             .map_err(|e| anyhow::anyhow!(e))?;
         depot.set_session(session);
 
         record.access().await?;
 
-        res.render(Redirect::other(format!(
-            "/shared/files{}",
-            path.path_buf().display()
-        )));
+        res.render(Redirect::other(format!("/shared/files{redirect_path}")));
 
         Ok(())
     }
@@ -547,8 +569,15 @@ async fn shared_link_handler(
 }
 
 #[handler]
-async fn sse_connected(req: &Request, res: &mut Response) -> AppResult {
-    let view = req.param::<Page>("page").unwrap_or(Page::search(""));
+async fn sse_connected(depot: &Depot, req: &Request, res: &mut Response) -> AppResult {
+    let path = req.query::<&str>("path").unwrap_or("");
+    let page = if path.is_empty() {
+        Page::search("")
+    } else {
+        let mut path_buf = PathBuf::from(path);
+        ensure_path_is_accessible(&mut path_buf, depot)?;
+        Page::from(path_buf)
+    };
 
     let (tx, rx) = mpsc::unbounded_channel::<Event>();
     let rx = UnboundedReceiverStream::new(rx);
@@ -558,10 +587,10 @@ async fn sse_connected(req: &Request, res: &mut Response) -> AppResult {
             .lock()
             .map_err(|e| anyhow::anyhow!("mutex acquiring error: {e}"))?;
 
-        if let Some(existing) = conns.get_mut(&view) {
+        if let Some(existing) = conns.get_mut(&page) {
             existing.push(tx);
         } else {
-            conns.insert(view, vec![tx]);
+            conns.insert(page, vec![tx]);
         }
     }
 
@@ -612,15 +641,15 @@ pub(crate) fn report_indexing_progress(progress: (i64, i64)) {
 
 fn broadcast(event: &Event) {
     match SSE_CONNECTIONS.lock() {
-        Ok(mut connections) => match event {
+        Ok(mut all_connections) => match event {
             Event::Ping | Event::Progress(_) => {
-                connections.retain(|_, conns| {
+                all_connections.retain(|_, conns| {
                     conns.retain(|tx| tx.send(event.clone()).is_ok());
                     !conns.is_empty()
                 });
             }
-            Event::Reload(view) => {
-                if let Some(conns) = connections.get_mut(view) {
+            Event::Reload(page) => {
+                if let Some(conns) = all_connections.get_mut(page) {
                     conns.retain(|tx| tx.send(event.clone()).is_ok());
                 }
             }
@@ -628,13 +657,6 @@ fn broadcast(event: &Event) {
         Err(e) => {
             tracing::error!(error = ?e, "broadcasting event failed");
         }
-    }
-}
-
-pub(crate) fn access_url(path: &str, access: &Access) -> String {
-    match access {
-        Access::Admin => path.into(),
-        Access::Shared(_) => format!("/shared{path}"),
     }
 }
 
@@ -657,14 +679,10 @@ fn protected_routes() -> Router {
     Router::new()
         .hoop(ensure_some_access)
         .push(Router::with_path("files").push(Router::with_path("{*path}").get(path_handler)))
-        .push(Router::with_path("search").get(search_handler))
         .push(Router::with_path("preview").get(preview_handler))
         .push(Router::with_path("download").get(download_handler))
-        .push(
-            Router::with_path("sse")
-                .get(sse_connected)
-                .push(Router::with_path("{*page}").get(sse_connected)),
-        )
+        .push(Router::with_path("search").get(search_handler))
+        .push(Router::with_path("sse").get(sse_connected))
 }
 
 pub(crate) async fn server() -> (Server<TcpAcceptor>, Router) {

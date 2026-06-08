@@ -856,7 +856,7 @@ pub(crate) fn shared_link_password(
                         @if message.is_some() {
                             (message.unwrap())
                         }
-                        form action={"/share/" (record.url)} method="POST" {
+                        form action={"/shared/link/" (record.url)} method="POST" {
                             input type="password" autofocus name="password" required placeholder="password";
                             input type="submit" value="Continue";
                         }

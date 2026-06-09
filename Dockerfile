@@ -22,8 +22,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 FROM alpine AS runtime
 WORKDIR /fayls
 
+COPY --from=mwader/static-ffmpeg:latest /ffmpeg /usr/local/bin/
+COPY --from=mwader/static-ffmpeg:latest /ffprobe /usr/local/bin/
+
 RUN apk add --no-cache sqlite \
-                       ffmpeg \
                        tesseract-ocr \
                        tesseract-ocr-data-eng \
                        tesseract-ocr-data-bul

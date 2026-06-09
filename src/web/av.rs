@@ -2,7 +2,7 @@ use std::{fmt::Write as _, path::Path, process::Stdio};
 
 use salvo::{Request, Response};
 use serde::Deserialize;
-use tokio::process::Command;
+use tokio::{io::AsyncReadExt, process::Command};
 use tokio_util::io::ReaderStream;
 
 use crate::{
@@ -395,10 +395,7 @@ fn stream_video_segment(
     #[allow(clippy::cast_possible_truncation)]
     #[allow(clippy::cast_sign_loss)]
     let keyframe_interval = (HLS_SEGMENT_DURATION * 30.0).round() as u32;
-    let scale = format!(
-        "scale=w={}:h={}:force_original_aspect_ratio=decrease:force_divisible_by=2",
-        variant.width, variant.height
-    );
+    let video_filter = video_segment_filter(variant);
 
     let mut command = ffmpeg_base_command(start, duration, path);
     command
@@ -421,7 +418,7 @@ fn stream_video_segment(
         .arg("-force_key_frames")
         .arg(format!("expr:gte(t,n_forced*{HLS_SEGMENT_DURATION})"))
         .arg("-vf")
-        .arg(scale)
+        .arg(video_filter)
         .arg("-b:v")
         .arg(format!("{}k", variant.config.video_bitrate_kbps))
         .arg("-maxrate")
@@ -447,6 +444,13 @@ fn stream_video_segment(
         .arg("pipe:1");
 
     stream_ffmpeg_stdout(command, res)
+}
+
+fn video_segment_filter(variant: &ResolvedVideoVariant) -> String {
+    format!(
+        "scale=w={}:h={}:force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p",
+        variant.width, variant.height
+    )
 }
 
 fn stream_audio_segment(
@@ -491,7 +495,7 @@ fn ffmpeg_base_command(start: f64, duration: f64, path: &Path) -> Command {
         .kill_on_drop(true)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .arg("-hide_banner")
         .arg("-loglevel")
         .arg("error")
@@ -513,13 +517,38 @@ fn stream_ffmpeg_stdout(mut command: Command, res: &mut Response) -> AppResult {
         .stdout
         .take()
         .ok_or_else(|| anyhow::anyhow!("ffmpeg stdout was not piped"))?;
+    let stderr = child.stderr.take();
 
     tokio::spawn(async move {
-        match child.wait().await {
+        let stderr = async move {
+            let Some(mut stderr) = stderr else {
+                return Ok(String::new());
+            };
+
+            let mut output = Vec::new();
+            stderr.read_to_end(&mut output).await?;
+            Ok::<_, std::io::Error>(String::from_utf8_lossy(&output).into_owned())
+        };
+
+        let (status, stderr) = tokio::join!(child.wait(), stderr);
+
+        match status {
             Ok(status) if status.success() => {}
             Ok(status) => {
-                let code = status.code();
-                tracing::warn!(?code, "ffmpeg exited with an error");
+                let exit_code = status.code();
+                match stderr {
+                    Ok(stderr) => {
+                        tracing::warn!(?exit_code, ?command, stderr, "ffmpeg exited with an error");
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            ?exit_code,
+                            ?command,
+                            ?error,
+                            "ffmpeg exited with an error and failed to read stderr"
+                        );
+                    }
+                }
             }
             Err(error) => tracing::warn!(?error, "failed to wait for ffmpeg"),
         }
@@ -627,4 +656,23 @@ fn video_bandwidth(variant: &ResolvedVideoVariant) -> u32 {
 
 fn video_average_bandwidth(variant: &ResolvedVideoVariant) -> u32 {
     (variant.config.video_bitrate_kbps + variant.config.audio_bitrate_kbps).saturating_mul(1000)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn video_segment_filter_converts_to_8_bit_h264_main_compatible_format() {
+        let variant = ResolvedVideoVariant {
+            config: VIDEO_VARIANTS[0],
+            width: 640,
+            height: 360,
+        };
+
+        assert_eq!(
+            video_segment_filter(&variant),
+            "scale=w=640:h=360:force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p"
+        );
+    }
 }

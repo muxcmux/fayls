@@ -81,6 +81,10 @@ body > main {
       0 0 / var(--size) var(--size);
   }
 
+  video {
+    width: 100%;
+  }
+
   .no-preview {
     padding: 5rem 1rem 0;
     text-align: center;
@@ -284,13 +288,15 @@ body > main {
       }
     }
 
-    &.ext-mid, &.ext-midi, &.ext-mp3, &.ext-flac, &.ext-m4p, &.ext-m4a {
+    &.ext-aac, &.ext-wav, &.ext-ogg, &.ext-oga, &.ext-opus, &.ext-wma, &.ext-aiff, &.ext-aif,
+    &.ext-alac, &.ext-mid, &.ext-midi, &.ext-mp3, &.ext-flac, &.ext-m4p, &.ext-m4a {
       td.icon i {
         mask-image: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16"><path d="M11 6.64a1 1 0 0 0-1.243-.97l-1 .25A1 1 0 0 0 8 6.89v4.306A2.6 2.6 0 0 0 7 11c-.5 0-.974.134-1.338.377-.36.24-.662.628-.662 1.123s.301.883.662 1.123c.364.243.839.377 1.338.377s.974-.134 1.338-.377c.36-.24.662-.628.662-1.123V8.89l2-.5z"/><path d="M14 14V4.5L9.5 0H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2M9.5 3A1.5 1.5 0 0 0 11 4.5h2V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h5.5z"/></svg>');
       }
     }
 
-    &.ext-mp4, &.ext-hevc, &.ext-m4v, &.ext-mov, &.ext-mkv, &.ext-avi {
+    &.ext-mp4, &.ext-m4v, &.ext-mov, &.ext-mkv, &.ext-webm, &.ext-avi, &.ext-wmv, &.ext-flv,
+    &.ext-mpeg, &.ext-mpg, &.ext-ts, &.ext-m2ts, &.ext-3gp, &.ext-ogv, &.ext-hevc {
       td.icon i {
         mask-image: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16"><path d="M6 6.883v4.234a.5.5 0 0 0 .757.429l3.528-2.117a.5.5 0 0 0 0-.858L6.757 6.454a.5.5 0 0 0-.757.43z"/><path d="M14 14V4.5L9.5 0H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2M9.5 3A1.5 1.5 0 0 0 11 4.5h2V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h5.5z"/></svg>');
       }

@@ -60,6 +60,8 @@ pub struct App {
     pub log_level: String,
     pub tesseract_bin: String,
     pub extractor_bin: String,
+    pub ffmpeg_bin: String,
+    pub ffprobe_bin: String,
     pub theme: String,
     pub cache_dir: PathBuf,
     pub share_url: Option<String>,

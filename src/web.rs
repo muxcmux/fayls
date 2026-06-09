@@ -1,3 +1,4 @@
+pub(crate) mod av;
 pub(crate) mod views;
 
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
@@ -154,7 +155,7 @@ async fn path_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> A
 
     let mut path = PathBuf::from(path);
 
-    ensure_path_is_accessible(&mut path, depot)?;
+    ensure_full_accessible_path(&mut path, depot)?;
 
     let access = access(depot)?;
     let page = views::page(Page::from(&path), req, &access).await?;
@@ -215,7 +216,7 @@ async fn preview_handler(depot: &Depot, req: &mut Request, res: &mut Response) -
         .query::<PathBuf>("path")
         .ok_or(Error::BadRequest("no path param"))?;
 
-    ensure_path_is_accessible(&mut path, depot)?;
+    ensure_full_accessible_path(&mut path, depot)?;
 
     _ = ExistingPathRecord::find_by_path(&path)
         .await?
@@ -229,6 +230,12 @@ async fn preview_handler(depot: &Depot, req: &mut Request, res: &mut Response) -
     match path.extension().and_then(|e| e.to_str()) {
         Some(ext) => match ext.to_ascii_lowercase().as_ref() {
             "docx" => preview_docx_file(&path, res).await?,
+            ext if av::is_video_file_extension(ext) => {
+                av::preview_video_file(&path, req, res).await?;
+            }
+            ext if av::is_audio_file_extension(ext) => {
+                av::preview_audio_file(&path, req, res).await?;
+            }
             _ => serve_inline_file(&path, req, res).await,
         },
         None => serve_inline_file(&path, req, res).await,
@@ -255,7 +262,7 @@ async fn download_handler(depot: &Depot, req: &mut Request, res: &mut Response) 
         .query::<PathBuf>("path")
         .ok_or(Error::BadRequest("no path param"))?;
 
-    ensure_path_is_accessible(&mut path, depot)?;
+    ensure_full_accessible_path(&mut path, depot)?;
 
     _ = ExistingPathRecord::find_by_path(&path)
         .await?
@@ -290,7 +297,7 @@ fn access(depot: &Depot) -> AppResult<Access> {
     session.get::<Access>("access").ok_or(Error::Forbidden)
 }
 
-fn ensure_path_is_accessible(requested_path: &mut PathBuf, depot: &Depot) -> AppResult {
+fn ensure_full_accessible_path(requested_path: &mut PathBuf, depot: &Depot) -> AppResult {
     let access = access(depot)?;
 
     if let Access::Shared(SharedAccess { path_buf, .. }) = &access {
@@ -575,7 +582,7 @@ async fn sse_connected(depot: &Depot, req: &Request, res: &mut Response) -> AppR
         Page::search("")
     } else {
         let mut path_buf = PathBuf::from(path);
-        ensure_path_is_accessible(&mut path_buf, depot)?;
+        ensure_full_accessible_path(&mut path_buf, depot)?;
         Page::from(path_buf)
     };
 

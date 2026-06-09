@@ -3,6 +3,7 @@ use crate::{
     db::{self, ExistingShareRecord, NewShareRecord},
     error::{AppResult, Error},
     indexing::get_progress,
+    web::av::{is_audio_file_extension, is_video_file_extension},
     web::{Access, Order, SharedAccess, Sort, access_scoped_path, get_sorting},
 };
 use std::path::{Path, PathBuf};
@@ -45,6 +46,16 @@ fn sse_url(path: &str, access: &Access) -> String {
 fn preview_url(path: &str, access: &Access) -> String {
     access_base_url(
         &format!("/preview?path={}", access_scoped_path(path, access)),
+        access,
+    )
+}
+
+fn preview_hls_url(path: &str, access: &Access) -> String {
+    access_base_url(
+        &format!(
+            "/preview?path={}&hls=master",
+            access_scoped_path(path, access)
+        ),
         access,
     )
 }
@@ -265,6 +276,7 @@ pub(crate) fn layout(
                 link rel="stylesheet" href="/static/app.css";
                 script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/htmx.min.js" {}
                 script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/ext/hx-sse.min.js" {}
+                script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js" {}
                 script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" {}
                 script src="/static/app.js" {}
 
@@ -649,6 +661,22 @@ async fn preview_file(file_path: &Path, access: &Access) -> AppResult<Markup> {
         "epub" => {
             html! {
                 iframe width="100%" height="100%" src={ "/static/vendor/epub/index.html?book=" (preview_url(f.as_ref(), access)) "&force_inline=true" } {}
+            }
+        }
+        ext if is_video_file_extension(ext) => {
+            html! {
+                video controls preload="metadata"
+                    x-ref="video"
+                    x-init="hls($refs.video, src)"
+                    x-data={"{ src: '" (preview_hls_url(f.as_ref(), access)) "'}"} {}
+            }
+        }
+        ext if is_audio_file_extension(ext) => {
+            html! {
+                audio controls preload="metadata"
+                    x-ref="audio"
+                    x-init="hls($refs.audio, src)"
+                    x-data={"{ src: '" (preview_hls_url(f.as_ref(), access)) "'}"} {}
             }
         }
         _ => {

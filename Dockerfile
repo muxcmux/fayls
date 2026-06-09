@@ -23,6 +23,7 @@ FROM alpine AS runtime
 WORKDIR /fayls
 
 RUN apk add --no-cache sqlite \
+                       ffmpeg \
                        tesseract-ocr \
                        tesseract-ocr-data-eng \
                        tesseract-ocr-data-bul

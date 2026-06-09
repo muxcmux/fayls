@@ -1,6 +1,8 @@
 app:
   tesseract_bin: tesseract
   extractor_bin: extractor
+  ffmpeg_bin: ffmpeg
+  ffprobe_bin: ffprobe
   log_level: info
   # pico.red pico.pink pico.fuchsia pico.purple pico.violet pico.indigo
   # pico.blue pico.cyan pico.jade pico.green pico.lime pico.yellow pico.amber

@@ -517,7 +517,10 @@ fn stream_ffmpeg_stdout(mut command: Command, res: &mut Response) -> AppResult {
     tokio::spawn(async move {
         match child.wait().await {
             Ok(status) if status.success() => {}
-            Ok(status) => tracing::warn!(?status, "ffmpeg exited with an error"),
+            Ok(status) => {
+                let code = status.code();
+                tracing::warn!(?code, "ffmpeg exited with an error");
+            }
             Err(error) => tracing::warn!(?error, "failed to wait for ffmpeg"),
         }
     });
@@ -532,6 +535,7 @@ fn add_streaming_headers(res: &mut Response, content_type: &'static str) {
     _ = res.add_header("cache-control", "no-store", true);
     _ = res.add_header("pragma", "no-cache", true);
 }
+
 fn segment_count(duration: f64) -> u64 {
     #[allow(clippy::cast_possible_truncation)]
     #[allow(clippy::cast_sign_loss)]

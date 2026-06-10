@@ -1,4 +1,3 @@
-pub(crate) mod av;
 pub(crate) mod views;
 
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
@@ -230,12 +229,6 @@ async fn preview_handler(depot: &Depot, req: &mut Request, res: &mut Response) -
     match path.extension().and_then(|e| e.to_str()) {
         Some(ext) => match ext.to_ascii_lowercase().as_ref() {
             "docx" => preview_docx_file(&path, res).await?,
-            ext if av::is_video_file_extension(ext) => {
-                av::preview_video_file(&path, req, res).await?;
-            }
-            ext if av::is_audio_file_extension(ext) => {
-                av::preview_audio_file(&path, req, res).await?;
-            }
             _ => serve_inline_file(&path, req, res).await,
         },
         None => serve_inline_file(&path, req, res).await,

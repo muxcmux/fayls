@@ -83,6 +83,7 @@ body > main {
 
   video {
     width: 100%;
+    max-height: calc(100dvh - 10rem);
   }
 
   .no-preview {

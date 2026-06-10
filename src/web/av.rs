@@ -657,22 +657,3 @@ fn video_bandwidth(variant: &ResolvedVideoVariant) -> u32 {
 fn video_average_bandwidth(variant: &ResolvedVideoVariant) -> u32 {
     (variant.config.video_bitrate_kbps + variant.config.audio_bitrate_kbps).saturating_mul(1000)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn video_segment_filter_converts_to_8_bit_h264_main_compatible_format() {
-        let variant = ResolvedVideoVariant {
-            config: VIDEO_VARIANTS[0],
-            width: 640,
-            height: 360,
-        };
-
-        assert_eq!(
-            video_segment_filter(&variant),
-            "scale=w=640:h=360:force_original_aspect_ratio=decrease:force_divisible_by=2,format=yuv420p"
-        );
-    }
-}

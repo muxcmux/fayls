@@ -1,6 +1,6 @@
-use std::process::Stdio;
+use std::{path::Path, process::Stdio};
 
-use salvo::{Request, Response};
+use salvo::{Request, Response, fs::NamedFile};
 use serde::Deserialize;
 use tokio::{io::AsyncReadExt, process::Command};
 use tokio_util::io::ReaderStream;
@@ -57,26 +57,96 @@ struct FfprobeOutput {
 
 #[derive(Default, Deserialize)]
 struct FfprobeStream {
+    codec_name: Option<String>,
     codec_type: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
 struct FfprobeFormat {
     duration: Option<String>,
+    format_name: Option<String>,
 }
 
 struct Metadata {
     duration: f64,
+    format_names: Vec<String>,
     streams: Vec<FfprobeStream>,
 }
 
 impl Metadata {
-    fn has_audio(&self) -> bool {
+    fn contains_audio_stream(&self) -> bool {
         self.streams
             .iter()
             .any(|stream| stream.codec_type.as_ref().is_some_and(|ct| ct == "audio"))
     }
+
+    fn contains_video_stream(&self) -> bool {
+        self.streams
+            .iter()
+            .any(|stream| stream.codec_type.as_ref().is_some_and(|ct| ct == "video"))
+    }
+
+    fn can_stream_directly(&self, ext: &str) -> bool {
+        if is_video_file_extension(ext) && self.contains_video_stream() {
+            return self.is_directly_streamable_video();
+        }
+
+        if is_audio_file_extension(ext)
+            || (self.contains_audio_stream() && !self.contains_video_stream())
+        {
+            return self.is_directly_streamable_audio();
+        }
+
+        false
+    }
+
+    fn is_directly_streamable_video(&self) -> bool {
+        let video_streams: Vec<_> = self
+            .streams
+            .iter()
+            .filter(|stream| stream.codec_type.as_deref() == Some("video"))
+            .collect();
+
+        self.format_names.iter().any(|name| name == "mp4")
+            && !video_streams.is_empty()
+            && video_streams
+                .iter()
+                .all(|stream| is_video_codec_directly_streamable(stream.codec_name.as_deref()))
+            && self
+                .streams
+                .iter()
+                .filter(|stream| stream.codec_type.as_deref() == Some("audio"))
+                .all(|stream| is_audio_codec_directly_streamable(stream.codec_name.as_deref()))
+    }
+
+    fn is_directly_streamable_audio(&self) -> bool {
+        self.format_names
+            .iter()
+            .any(|name| matches!(name.as_str(), "mp3" | "mp4" | "flac" | "ogg" | "wav"))
+            && self
+                .streams
+                .iter()
+                .filter(|stream| stream.codec_type.as_deref() == Some("audio"))
+                .any(|stream| is_audio_codec_directly_streamable(stream.codec_name.as_deref()))
+            && self
+                .streams
+                .iter()
+                .filter(|stream| stream.codec_type.as_deref() == Some("audio"))
+                .all(|stream| is_audio_codec_directly_streamable(stream.codec_name.as_deref()))
+    }
 }
+
+fn is_video_codec_directly_streamable(codec_name: Option<&str>) -> bool {
+    matches!(codec_name, Some("h264" | "av1"))
+}
+
+fn is_audio_codec_directly_streamable(codec_name: Option<&str>) -> bool {
+    codec_name.is_some_and(|codec_name| {
+        codec_name.starts_with("pcm_")
+            || matches!(codec_name, "mp3" | "aac" | "vorbis" | "opus" | "flac")
+    })
+}
+
 fn hls_request(req: &Request) -> AppResult<HlsRequest> {
     Ok(HlsRequest {
         route: req.uri().path().to_string(),
@@ -93,11 +163,26 @@ fn hls_request(req: &Request) -> AppResult<HlsRequest> {
     })
 }
 
+pub(crate) async fn should_stream_directly(path: impl AsRef<Path>) -> AppResult<bool> {
+    let path = path.as_ref();
+    let Some(ext) = path.extension().and_then(|ext| ext.to_str()) else {
+        return Ok(false);
+    };
+
+    Ok(probe(path)
+        .await?
+        .can_stream_directly(&ext.to_ascii_lowercase()))
+}
+
 pub(crate) async fn preview_media_file(
     path: &AuthorizedPath,
     req: &Request,
     res: &mut Response,
 ) -> AppResult {
+    if req.query::<&str>("hls").is_none() && should_stream_directly(path.as_ref()).await? {
+        return stream_direct_media_file(path, req, res).await;
+    }
+
     let hls = hls_request(req)?;
 
     match hls.kind {
@@ -124,15 +209,28 @@ pub(crate) async fn preview_media_file(
     }
 }
 
-async fn probe(path: &AuthorizedPath) -> AppResult<Metadata> {
+async fn stream_direct_media_file(
+    path: &AuthorizedPath,
+    req: &Request,
+    res: &mut Response,
+) -> AppResult {
+    NamedFile::builder(path.as_ref())
+        .disposition_type("inline")
+        .send(req.headers(), res)
+        .await;
+    Ok(())
+}
+
+async fn probe(path: impl AsRef<Path>) -> AppResult<Metadata> {
+    let path = path.as_ref();
     let output = Command::new(&config::get().preview.ffprobe_bin)
         .arg("-v")
         .arg("error")
         .arg("-print_format")
         .arg("json")
         .arg("-show_entries")
-        .arg("format=duration")
-        .arg(path.as_ref())
+        .arg("format=duration,format_name:stream=codec_type,codec_name")
+        .arg(path)
         .output()
         .await
         .map_err(|e| anyhow::anyhow!("failed to run ffprobe: {e}"))?;
@@ -140,7 +238,7 @@ async fn probe(path: &AuthorizedPath) -> AppResult<Metadata> {
     if !output.status.success() {
         return Err(anyhow::anyhow!(
             "ffprobe failed for {} with status {}",
-            path.as_ref().display(),
+            path.display(),
             output.status
         )
         .into());
@@ -161,6 +259,13 @@ async fn probe(path: &AuthorizedPath) -> AppResult<Metadata> {
 
     Ok(Metadata {
         duration,
+        format_names: output
+            .format
+            .and_then(|format| format.format_name)
+            .unwrap_or_default()
+            .split(',')
+            .map(str::to_owned)
+            .collect(),
         streams: output.streams.unwrap_or(vec![]),
     })
 }
@@ -186,7 +291,7 @@ async fn master_video_playlist(
         hls_request.route, hls_request.path
     );
 
-    if probe(path).await?.has_audio() {
+    if probe(path).await?.contains_audio_stream() {
         let audio_playlist_url =
             format!("{}?path={}&hls=audio", hls_request.route, hls_request.path);
         let audio_playlist_entry = format!(

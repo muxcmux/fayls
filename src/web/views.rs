@@ -5,7 +5,7 @@ use crate::{
     indexing::get_progress,
     web::{
         Access, AuthorizedPath, Order, SharedAccess, Sort, access_scoped_path,
-        av::{is_audio_file_extension, is_video_file_extension},
+        av::{is_audio_file_extension, is_video_file_extension, should_stream_directly},
         get_sorting,
     },
 };
@@ -668,19 +668,31 @@ async fn preview_file(file_path: &Path, access: &Access) -> AppResult<Markup> {
             }
         }
         ext if is_video_file_extension(ext) => {
-            html! {
-                video controls preload="metadata"
-                    x-ref="video"
-                    x-init="hls($refs.video, src)"
-                    x-data={"{ src: '" (preview_hls_url(f.as_ref(), "master", access)) "'}"} {}
+            if should_stream_directly(file_path).await.unwrap_or(false) {
+                html! {
+                    video controls preload="metadata" src={ (preview_url(f.as_ref(), access)) } {}
+                }
+            } else {
+                html! {
+                    video controls preload="metadata"
+                        x-ref="video"
+                        x-init="hls($refs.video, src)"
+                        x-data={"{ src: '" (preview_hls_url(f.as_ref(), "master", access)) "'}"} {}
+                }
             }
         }
         ext if is_audio_file_extension(ext) => {
-            html! {
-                audio controls preload="metadata"
-                    x-ref="audio"
-                    x-init="hls($refs.audio, src)"
-                    x-data={"{ src: '" (preview_hls_url(f.as_ref(), "audio", access)) "'}"} {}
+            if should_stream_directly(file_path).await.unwrap_or(false) {
+                html! {
+                    audio controls preload="metadata" src={ (preview_url(f.as_ref(), access)) } {}
+                }
+            } else {
+                html! {
+                    audio controls preload="metadata"
+                        x-ref="audio"
+                        x-init="hls($refs.audio, src)"
+                        x-data={"{ src: '" (preview_hls_url(f.as_ref(), "audio", access)) "'}"} {}
+                }
             }
         }
         _ => {

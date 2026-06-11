@@ -55,7 +55,7 @@ function hls(el, src) {
     hls.loadSource(src);
     hls.attachMedia(el);
     el.hls = hls;
-  } else if (media.canPlayType("application/vnd.apple.mpegurl")) {
+  } else if (el.canPlayType("application/vnd.apple.mpegurl")) {
     el.src = src;
   }
 }

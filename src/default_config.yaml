@@ -23,6 +23,9 @@ preview:
   # vaapi(amd/intel), nvenc(nvidia cuda), or v4l(video for linux), otherwise it defaults to libx264
   # software encoder
   encoder: cpu # cpu, vaapi, nvenc, v4l
+  audio_bitrate_kbps: 192,
+  # 720p is a good average for previews, not great, not terrible
+  max_video_height: 720,
 
 # self explanatory
 server:

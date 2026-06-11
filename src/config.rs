@@ -65,6 +65,8 @@ pub struct Preview {
     pub max_unknown_file_size: u64,
     pub ffmpeg_bin: String,
     pub ffprobe_bin: String,
+    pub max_video_height: u32,
+    pub audio_bitrate_kbps: u32,
     pub encoder: Encoder,
 }
 

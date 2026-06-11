@@ -20,8 +20,6 @@ const AUDIO_FILE_EXTENSIONS: &[&str] = &[
 ];
 const HLS_VIDEO_CHUNK_DURATION: f64 = 6.0;
 const HLS_AUDIO_CHUNK_DURATION: f64 = 80.0;
-const MAX_VIDEO_HEIGHT: u32 = 720;
-const AUDIO_BITRATE_KBPS: u32 = 128;
 
 pub(crate) fn is_video_file_extension(ext: &str) -> bool {
     VIDEO_FILE_EXTENSIONS
@@ -242,7 +240,7 @@ async fn stream_video_segment(
                 .arg("-preset")
                 .arg("veryfast")
                 .arg("-vf")
-                .arg(format!("scale=-2:{MAX_VIDEO_HEIGHT},format=yuv420p"))
+                .arg(format!("scale=-2:{},format=yuv420p", config::get().preview.max_video_height))
                 .arg("-x264opts")
                 .arg("subme=0:me_range=4:rc_lookahead=10:me=dia:no_chroma_me:8x8dct=0:partitions=none");
         }
@@ -251,7 +249,8 @@ async fn stream_video_segment(
                 .arg("h264_vaapi")
                 .arg("-vf")
                 .arg(format!(
-                    "format=nv12,hwupload,scale_vaapi=w=-2:h={MAX_VIDEO_HEIGHT}"
+                    "format=nv12,hwupload,scale_vaapi=w=-2:h={}",
+                    config::get().preview.max_video_height
                 ))
                 .arg("-init_hw_device")
                 .arg("vaapi=va:/dev/dri/renderD128")
@@ -263,7 +262,8 @@ async fn stream_video_segment(
                 .arg("h264_nvenc")
                 .arg("-vf")
                 .arg(format!(
-                    "format=nv12,hwupload_cuda,scale_cuda=w=-2:h={MAX_VIDEO_HEIGHT}"
+                    "format=nv12,hwupload_cuda,scale_cuda=w=-2:h={}",
+                    config::get().preview.max_video_height
                 ))
                 .arg("-init_hw_device")
                 .arg("cuda=hw")
@@ -274,7 +274,10 @@ async fn stream_video_segment(
             command
                 .arg("h264_v4l2m2m")
                 .arg("-vf")
-                .arg(format!("scale=-2:{MAX_VIDEO_HEIGHT},format=yuv420p"))
+                .arg(format!(
+                    "scale=-2:{},format=yuv420p",
+                    config::get().preview.max_video_height
+                ))
                 .arg("-b:v")
                 .arg("2500k")
                 .arg("-num_output_buffers")
@@ -305,7 +308,7 @@ async fn stream_audio_segment(
         .arg("-c:a")
         .arg("aac")
         .arg("-b:a")
-        .arg(format!("{AUDIO_BITRATE_KBPS}k"))
+        .arg(format!("{}k", config::get().preview.audio_bitrate_kbps))
         .arg("-output_ts_offset")
         .arg(format!("{start}"))
         .arg("-f")

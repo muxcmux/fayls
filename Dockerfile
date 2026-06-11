@@ -24,6 +24,7 @@ WORKDIR /fayls
 
 RUN apk add --no-cache sqlite \
                        ffmpeg \
+                       mesa-va-gallium \
                        tesseract-ocr \
                        tesseract-ocr-data-eng \
                        tesseract-ocr-data-bul

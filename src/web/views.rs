@@ -3,8 +3,11 @@ use crate::{
     db::{self, ExistingShareRecord, NewShareRecord},
     error::{AppResult, Error},
     indexing::get_progress,
-    web::av::{is_audio_file_extension, is_video_file_extension},
-    web::{Access, Order, SharedAccess, Sort, access_scoped_path, get_sorting},
+    web::{
+        Access, AuthorizedPath, Order, SharedAccess, Sort, access_scoped_path,
+        av::{is_audio_file_extension, is_video_file_extension},
+        get_sorting,
+    },
 };
 use std::path::{Path, PathBuf};
 
@@ -50,11 +53,12 @@ fn preview_url(path: &str, access: &Access) -> String {
     )
 }
 
-fn preview_hls_url(path: &str, access: &Access) -> String {
+fn preview_hls_url(path: &str, hls: &str, access: &Access) -> String {
     access_base_url(
         &format!(
-            "/preview?path={}&hls=master",
-            access_scoped_path(path, access)
+            "/preview?path={}&hls={}",
+            access_scoped_path(path, access),
+            hls
         ),
         access,
     )
@@ -340,7 +344,7 @@ pub(crate) fn login(message: Option<Message>, username: Option<&String>) -> Mark
     }
 }
 
-pub(crate) async fn docx_frame(path: &Path) -> AppResult<Markup> {
+pub(crate) async fn docx_frame(path: &AuthorizedPath) -> AppResult<Markup> {
     let contents = tokio::fs::read(path)
         .await
         .map_err(|e| anyhow::anyhow!("can't read file {e}"))?;
@@ -353,7 +357,7 @@ pub(crate) async fn docx_frame(path: &Path) -> AppResult<Markup> {
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 script src="https://unpkg.com/jszip/dist/jszip.min.js" {}
                 script src="https://unpkg.com/docx-preview/dist/docx-preview.min.js" {}
-                title { (path.to_str().unwrap_or_default()) }
+                title { (path.as_ref().to_str().unwrap_or_default()) }
                 script type="text/javascript" {
                     (PreEscaped("
                         document.addEventListener('DOMContentLoaded', (_) => {
@@ -668,7 +672,7 @@ async fn preview_file(file_path: &Path, access: &Access) -> AppResult<Markup> {
                 video controls preload="metadata"
                     x-ref="video"
                     x-init="hls($refs.video, src)"
-                    x-data={"{ src: '" (preview_hls_url(f.as_ref(), access)) "'}"} {}
+                    x-data={"{ src: '" (preview_hls_url(f.as_ref(), "master", access)) "'}"} {}
             }
         }
         ext if is_audio_file_extension(ext) => {
@@ -676,7 +680,7 @@ async fn preview_file(file_path: &Path, access: &Access) -> AppResult<Markup> {
                 audio controls preload="metadata"
                     x-ref="audio"
                     x-init="hls($refs.audio, src)"
-                    x-data={"{ src: '" (preview_hls_url(f.as_ref(), access)) "'}"} {}
+                    x-data={"{ src: '" (preview_hls_url(f.as_ref(), "audio", access)) "'}"} {}
             }
         }
         _ => {

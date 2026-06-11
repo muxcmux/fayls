@@ -28,6 +28,9 @@ use salvo::{
 };
 use tokio::sync::mpsc::{self, UnboundedSender};
 
+// Scopes the path the the shared path, e.g. if the shared path is
+// /Documents/books, then a scoped /Documents/books/fiction, would
+// return /books/fiction
 pub(crate) fn access_scoped_path(path: &str, access: &Access) -> String {
     match access {
         Access::Admin => path.into(),
@@ -46,10 +49,19 @@ pub(crate) struct SharedAccess {
     pub(crate) expires_at: Option<i64>,
     pub(crate) path_buf: PathBuf,
 }
+
 #[derive(Serialize, Deserialize)]
 pub(crate) enum Access {
     Admin,
     Shared(SharedAccess),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct AuthorizedPath(PathBuf);
+impl AsRef<Path> for AuthorizedPath {
+    fn as_ref(&self) -> &Path {
+        self.0.as_ref()
+    }
 }
 
 impl Access {
@@ -153,12 +165,10 @@ async fn path_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> A
         .map(|p| format!("/{p}"))
         .expect("this can't happen");
 
-    let mut path = PathBuf::from(path);
-
-    ensure_full_accessible_path(&mut path, depot)?;
+    let authorized_path = authorize_path(PathBuf::from(path), depot)?;
 
     let access = access(depot)?;
-    let page = views::page(Page::from(&path), req, &access).await?;
+    let page = views::page(Page::from(authorized_path.as_ref()), req, &access).await?;
 
     res.render(Text::Html(
         if is_hx(req) {
@@ -212,63 +222,64 @@ async fn search_handler(depot: &Depot, req: &mut Request, res: &mut Response) ->
 
 #[handler]
 async fn preview_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> AppResult {
-    let mut path = req
+    let path = req
         .query::<PathBuf>("path")
         .ok_or(Error::BadRequest("no path param"))?;
 
-    ensure_full_accessible_path(&mut path, depot)?;
+    let authorized_path = authorize_path(path, depot)?;
 
-    _ = ExistingPathRecord::find_by_path(&path)
+    _ = ExistingPathRecord::find_by_path(authorized_path.as_ref())
         .await?
         .ok_or(Error::NotFound)?;
 
     if req.query::<&str>("force_inline").is_some() {
-        serve_inline_file(&path, req, res).await;
+        serve_inline_file(&authorized_path, req, res).await;
         return Ok(());
     }
 
-    match path.extension().and_then(|e| e.to_str()) {
+    match authorized_path
+        .as_ref()
+        .extension()
+        .and_then(|e| e.to_str())
+    {
         Some(ext) => match ext.to_ascii_lowercase().as_ref() {
-            "docx" => preview_docx_file(&path, res).await?,
-            ext if av::is_video_file_extension(ext) => {
-                av::preview_video_file(&path, req, res).await?;
+            "docx" => preview_docx_file(&authorized_path, res).await?,
+            ext if av::is_media_file_extension(ext) => {
+                av::preview_media_file(&authorized_path, req, res).await?;
             }
-            ext if av::is_audio_file_extension(ext) => {
-                av::preview_audio_file(&path, req, res).await?;
-            }
-            _ => serve_inline_file(&path, req, res).await,
+            _ => serve_inline_file(&authorized_path, req, res).await,
         },
-        None => serve_inline_file(&path, req, res).await,
+        None => serve_inline_file(&authorized_path, req, res).await,
     }
 
     Ok(())
 }
 
-async fn serve_inline_file(path: &Path, req: &mut Request, res: &mut Response) {
-    NamedFile::builder(path)
+async fn serve_inline_file(path: &AuthorizedPath, req: &mut Request, res: &mut Response) {
+    NamedFile::builder(path.as_ref())
         .disposition_type("inline")
         .send(req.headers(), res)
         .await;
 }
 
-async fn preview_docx_file(path: &Path, res: &mut Response) -> AppResult {
+async fn preview_docx_file(path: &AuthorizedPath, res: &mut Response) -> AppResult {
     res.render(Text::Html(views::docx_frame(path).await?.into_string()));
     Ok(())
 }
 
 #[handler]
 async fn download_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> AppResult {
-    let mut path = req
+    let path = req
         .query::<PathBuf>("path")
         .ok_or(Error::BadRequest("no path param"))?;
 
-    ensure_full_accessible_path(&mut path, depot)?;
+    let authorized_path = authorize_path(path, depot)?;
 
-    _ = ExistingPathRecord::find_by_path(&path)
+    _ = ExistingPathRecord::find_by_path(authorized_path.as_ref())
         .await?
         .ok_or(Error::NotFound)?;
 
-    NamedFile::builder(path)
+    NamedFile::builder(authorized_path.as_ref())
         .disposition_type("attachment")
         .send(req.headers(), res)
         .await;
@@ -297,26 +308,35 @@ fn access(depot: &Depot) -> AppResult<Access> {
     session.get::<Access>("access").ok_or(Error::Forbidden)
 }
 
-fn ensure_full_accessible_path(requested_path: &mut PathBuf, depot: &Depot) -> AppResult {
+// Authorizes a path, returning the path buf for the resource on disc
+// wrapped in a struct
+// Admin requests use the full path in the query, e.g. /Documents/books,
+// while shared requested_paths are rooted to the shared dir, e.g. if
+// the shared dir is /Documents/books, requests for paths will have
+// a root of /books
+fn authorize_path(requested_path: PathBuf, depot: &Depot) -> AppResult<AuthorizedPath> {
     let access = access(depot)?;
 
-    if let Access::Shared(SharedAccess { path_buf, .. }) = &access {
-        let real_path = requested_path
-            .components()
-            .filter(|c| !matches!(c, Component::RootDir | Component::Prefix(_)))
-            .collect::<PathBuf>();
-        *requested_path = path_buf.parent().ok_or(Error::Forbidden)?.join(real_path);
+    match &access {
+        Access::Admin => return Ok(AuthorizedPath(requested_path)),
+        Access::Shared(SharedAccess { path_buf, .. }) => {
+            let real_path = requested_path
+                .components()
+                .filter(|c| !matches!(c, Component::RootDir | Component::Prefix(_)))
+                .collect::<PathBuf>();
+            let authorized_path =
+                AuthorizedPath(path_buf.parent().ok_or(Error::Forbidden)?.join(real_path));
+            if access.is_allowed(authorized_path.as_ref()) {
+                return Ok(authorized_path);
+            }
+        }
     }
 
-    if !access.is_allowed(&*requested_path) {
-        return Err(Error::Forbidden);
-    }
-
-    Ok(())
+    Err(Error::Forbidden)
 }
 
 #[handler]
-async fn ensure_some_access(depot: &Depot, ctrl: &mut FlowCtrl, res: &mut Response) -> AppResult {
+async fn ensure_authenticated(depot: &Depot, ctrl: &mut FlowCtrl, res: &mut Response) -> AppResult {
     if depot
         .session()
         .is_some_and(|session| session.get::<Access>("access").is_some())
@@ -506,7 +526,7 @@ async fn shared_link_handler(
     req: &mut Request,
     res: &mut Response,
 ) -> AppResult {
-    async fn grant_access(
+    async fn grant_shared_access(
         record: &mut ExistingShareRecord,
         res: &mut Response,
         depot: &mut Depot,
@@ -556,7 +576,7 @@ async fn shared_link_handler(
                 .verify_password(password.as_bytes(), &hash)
                 .is_ok()
             {
-                grant_access(&mut share_record, res, depot).await?;
+                grant_shared_access(&mut share_record, res, depot).await?;
                 return Ok(());
             }
 
@@ -570,7 +590,7 @@ async fn shared_link_handler(
         return Ok(());
     }
 
-    grant_access(&mut share_record, res, depot).await?;
+    grant_shared_access(&mut share_record, res, depot).await?;
 
     Ok(())
 }
@@ -581,9 +601,9 @@ async fn sse_connected(depot: &Depot, req: &Request, res: &mut Response) -> AppR
     let page = if path.is_empty() {
         Page::search("")
     } else {
-        let mut path_buf = PathBuf::from(path);
-        ensure_full_accessible_path(&mut path_buf, depot)?;
-        Page::from(path_buf)
+        let path_buf = PathBuf::from(path);
+        let authorized_path = authorize_path(path_buf, depot)?;
+        Page::from(authorized_path.as_ref())
     };
 
     let (tx, rx) = mpsc::unbounded_channel::<Event>();
@@ -684,7 +704,7 @@ fn admin_routes() -> Router {
 
 fn protected_routes() -> Router {
     Router::new()
-        .hoop(ensure_some_access)
+        .hoop(ensure_authenticated)
         .push(Router::with_path("files").push(Router::with_path("{*path}").get(path_handler)))
         .push(Router::with_path("preview").get(preview_handler))
         .push(Router::with_path("download").get(download_handler))

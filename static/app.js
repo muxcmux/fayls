@@ -51,23 +51,7 @@ htmx.on('htmx:after:settle', () => {
 
 function hls(el, src) {
   if (window.Hls && Hls.isSupported()) {
-    const hls = new Hls({
-      abrEwmaDefaultEstimate: 500000,
-      capLevelToPlayerSize: true,
-      startLevel: -1,
-      testBandwidth: true,
-    });
-
-    hls.currentLevel = -1;
-    hls.loadLevel = -1;
-    hls.nextLevel = -1;
-
-    hls.on(Hls.Events.MANIFEST_PARSED, () => {
-      hls.currentLevel = -1;
-      hls.loadLevel = -1;
-      hls.nextLevel = -1;
-    });
-
+    const hls = new Hls();
     hls.loadSource(src);
     hls.attachMedia(el);
     el.hls = hls;

@@ -51,8 +51,13 @@ struct HlsRequest {
 
 #[derive(Default, Deserialize)]
 struct FfprobeOutput {
-    #[serde(default)]
     format: Option<FfprobeFormat>,
+    streams: Option<Vec<FfprobeStream>>,
+}
+
+#[derive(Default, Deserialize)]
+struct FfprobeStream {
+    codec_type: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -60,6 +65,18 @@ struct FfprobeFormat {
     duration: Option<String>,
 }
 
+struct Metadata {
+    duration: f64,
+    streams: Vec<FfprobeStream>,
+}
+
+impl Metadata {
+    fn has_audio(&self) -> bool {
+        self.streams
+            .iter()
+            .any(|stream| stream.codec_type.as_ref().is_some_and(|ct| ct == "audio"))
+    }
+}
 fn hls_request(req: &Request) -> AppResult<HlsRequest> {
     Ok(HlsRequest {
         route: req.uri().path().to_string(),
@@ -85,7 +102,7 @@ pub(crate) async fn preview_media_file(
 
     match hls.kind {
         HlsKind::Master => {
-            render_hls_playlist(res, master_video_playlist(&hls));
+            render_hls_playlist(res, master_video_playlist(path, &hls).await?);
             Ok(())
         }
         HlsKind::Video(segment) => {
@@ -107,7 +124,7 @@ pub(crate) async fn preview_media_file(
     }
 }
 
-async fn probe_duration(path: &AuthorizedPath) -> AppResult<f64> {
+async fn probe(path: &AuthorizedPath) -> AppResult<Metadata> {
     let output = Command::new(&config::get().preview.ffprobe_bin)
         .arg("-v")
         .arg("error")
@@ -142,7 +159,10 @@ async fn probe_duration(path: &AuthorizedPath) -> AppResult<f64> {
         return Err(anyhow::anyhow!("media duration must be greater than zero").into());
     }
 
-    Ok(duration)
+    Ok(Metadata {
+        duration,
+        streams: output.streams.unwrap_or(vec![]),
+    })
 }
 
 fn parse_duration(value: Option<&str>) -> Option<f64> {
@@ -151,30 +171,40 @@ fn parse_duration(value: Option<&str>) -> Option<f64> {
         .filter(|duration| duration.is_finite() && *duration > 0.0)
 }
 
-fn master_video_playlist(hls_request: &HlsRequest) -> String {
-    let audio_playlist_url = format!("{}?path={}&hls=audio", hls_request.route, hls_request.path);
-    let video_playlist_url = format!("{}?path={}&hls=video", hls_request.route, hls_request.path);
+async fn master_video_playlist(
+    path: &AuthorizedPath,
+    hls_request: &HlsRequest,
+) -> AppResult<String> {
+    let mut list = String::new();
+    list.push_str("#EXTM3U\n");
+    list.push_str("#EXT-X-VERSION:6\n");
+    list.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
+    list.push_str("#EXT-X-PLAYLIST-TYPE:VOD\n");
 
-    let audio_playlist_entry = format!(
-        "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"default\",DEFAULT=YES,AUTOSELECT=YES,URI=\"{}\"",
-        &audio_playlist_url
+    let video_playlist_url = format!(
+        "{}?path={}&hls=video\n",
+        hls_request.route, hls_request.path
     );
 
-    let lines = [
-        "#EXTM3U",
-        "#EXT-X-VERSION:6",
-        "#EXT-X-MEDIA-SEQUENCE:0",
-        "#EXT-X-PLAYLIST-TYPE:VOD",
-        &audio_playlist_entry,
-        "#EXT-X-STREAM-INF:BANDWIDTH=2500000,CODECS=\"avc1.64001f,mp4a.40.2\",AUDIO=\"audio\"",
-        &video_playlist_url,
-    ];
+    if probe(path).await?.has_audio() {
+        let audio_playlist_url =
+            format!("{}?path={}&hls=audio", hls_request.route, hls_request.path);
+        let audio_playlist_entry = format!(
+            "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",NAME=\"default\",DEFAULT=YES,AUTOSELECT=YES,URI=\"{}\"\n",
+            &audio_playlist_url
+        );
+        list.push_str(&audio_playlist_entry);
+        list.push_str("#EXT-X-STREAM-INF:BANDWIDTH=2500000,CODECS=\"avc1.64001f,mp4a.40.2\",AUDIO=\"audio\"\n");
+    } else {
+        list.push_str("#EXT-X-STREAM-INF:BANDWIDTH=2500000,CODECS=\"avc1.64001f\"\n");
+    }
 
-    lines.join("\n")
+    list.push_str(&video_playlist_url);
+    Ok(list)
 }
 
 async fn segmented_playlist(path: &AuthorizedPath, hls_request: &HlsRequest) -> AppResult<String> {
-    let total_duration = probe_duration(path).await?;
+    let total_duration = probe(path).await?.duration;
     let (av, chunk_duration) = match hls_request.kind {
         HlsKind::Audio(_) => ("audio", HLS_AUDIO_CHUNK_DURATION),
         _ => ("video", HLS_VIDEO_CHUNK_DURATION),
@@ -217,7 +247,7 @@ async fn stream_video_segment(
     segment: u64,
     res: &mut Response,
 ) -> AppResult {
-    let total_duration = probe_duration(path).await?;
+    let total_duration = probe(path).await?.duration;
     let start = segment_start(total_duration, HLS_VIDEO_CHUNK_DURATION, segment)?;
     let duration = segment_duration(total_duration, HLS_VIDEO_CHUNK_DURATION, segment)?;
 
@@ -297,7 +327,7 @@ async fn stream_audio_segment(
     segment: u64,
     res: &mut Response,
 ) -> AppResult {
-    let total_duration = probe_duration(path).await?;
+    let total_duration = probe(path).await?.duration;
     let start = segment_start(total_duration, HLS_AUDIO_CHUNK_DURATION, segment)?;
     let duration = segment_duration(total_duration, HLS_AUDIO_CHUNK_DURATION, segment)?;
 

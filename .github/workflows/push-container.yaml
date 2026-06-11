@@ -1,6 +1,8 @@
 name: Push container to GHCR
 on:
-  workflow_dispatch
+  push:
+    branches:
+      - master
 
 permissions:
   contents: read

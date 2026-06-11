@@ -316,13 +316,13 @@ async fn extract_with_external_command(command: &mut Command) -> Result<String> 
 async fn extract_content_from_file(file_path: &Path) -> Result<String> {
     match file_path.into() {
         IndexableFileType::Image => Ok(extract_with_external_command(
-            Command::new(&config::get().app.tesseract_bin)
+            Command::new(&config::get().indexing.tesseract_bin)
                 .arg(file_path)
                 .arg("stdout"),
         )
         .await?),
         IndexableFileType::Doc => Ok(extract_with_external_command(
-            Command::new(&config::get().app.extractor_bin).arg(file_path),
+            Command::new(&config::get().indexing.extractor_bin).arg(file_path),
         )
         .await?),
         IndexableFileType::Ignored => Ok(String::new()),

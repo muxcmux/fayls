@@ -110,7 +110,7 @@ pub(crate) async fn preview_media_file(
 }
 
 async fn probe_duration(path: &AuthorizedPath) -> AppResult<f64> {
-    let output = Command::new(&config::get().app.ffprobe_bin)
+    let output = Command::new(&config::get().preview.ffprobe_bin)
         .arg("-v")
         .arg("error")
         .arg("-print_format")
@@ -233,17 +233,58 @@ async fn stream_video_segment(
         .arg("cfr")
         .arg("-output_ts_offset")
         .arg(format!("{start}"))
-        .arg("-c:v")
-        .arg("libx264")
-        .arg("-preset")
-        .arg("veryfast")
-        .arg("-vf")
-        .arg(format!("scale=-2:{MAX_VIDEO_HEIGHT},format=yuv420p"))
-        .arg("-x264opts")
-        .arg("subme=0:me_range=4:rc_lookahead=10:me=dia:no_chroma_me:8x8dct=0:partitions=none")
-        .arg("-f")
-        .arg("mpegts")
-        .arg("pipe:1");
+        .arg("-c:v");
+
+    match config::get().preview.encoder {
+        config::Encoder::Cpu => {
+            command
+                .arg("libx264")
+                .arg("-preset")
+                .arg("veryfast")
+                .arg("-vf")
+                .arg(format!("scale=-2:{MAX_VIDEO_HEIGHT},format=yuv420p"))
+                .arg("-x264opts")
+                .arg("subme=0:me_range=4:rc_lookahead=10:me=dia:no_chroma_me:8x8dct=0:partitions=none");
+        }
+        config::Encoder::Vaapi => {
+            command
+                .arg("h264_vaapi")
+                .arg("-vf")
+                .arg(format!(
+                    "format=nv12,hwupload,scale_vaapi=w=-2:h={MAX_VIDEO_HEIGHT}"
+                ))
+                .arg("-init_hw_device")
+                .arg("vaapi=va:/dev/dri/renderD128")
+                .arg("-filter_hw_device")
+                .arg("va");
+        }
+        config::Encoder::Nvenc => {
+            command
+                .arg("h264_nvenc")
+                .arg("-vf")
+                .arg(format!(
+                    "format=nv12,hwupload_cuda,scale_cuda=w=-2:h={MAX_VIDEO_HEIGHT}"
+                ))
+                .arg("-init_hw_device")
+                .arg("cuda=hw")
+                .arg("-filter_hw_device")
+                .arg("hw");
+        }
+        config::Encoder::V4l => {
+            command
+                .arg("h264_v4l2m2m")
+                .arg("-vf")
+                .arg(format!("scale=-2:{MAX_VIDEO_HEIGHT},format=yuv420p"))
+                .arg("-b:v")
+                .arg("2500k")
+                .arg("-num_output_buffers")
+                .arg("32")
+                .arg("-num_capture_buffers")
+                .arg("32");
+        }
+    }
+
+    command.arg("-f").arg("mpegts").arg("pipe:1");
 
     stream_ffmpeg_stdout(command, res)
 }
@@ -275,7 +316,7 @@ async fn stream_audio_segment(
 }
 
 fn ffmpeg_base_command(start: f64, duration: f64, path: &AuthorizedPath) -> Command {
-    let mut command = Command::new(&config::get().app.ffmpeg_bin);
+    let mut command = Command::new(&config::get().preview.ffmpeg_bin);
     command
         .kill_on_drop(true)
         .stdin(Stdio::null())

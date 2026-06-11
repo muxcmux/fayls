@@ -8,15 +8,23 @@ directory index (mod_dir), but with search and sharing functionality.
 ## Features
 
 - Lists dirs and files
-- Preview some files - images, pdf (uses browser pdf viewer), docx, epubs, and utf8 text (more
-  coming)
 - Sort by name/last modified date/size
 - Live server updates with sse
-- Search by filename or contents - indexes text from pdf, office docs, ebooks, and utf8 readable
-  files. Does ocr for images with tesseract (can be very slow if you run a potato, so remove the
-  image extensions from the `indexing.index_contents_whitelist` default config key).
-- Create shared links to share files/folders. You can configure the base domain of the shared links
-  to point to a different domain with the `app.share_url` setting
+- Search by filename or contents
+- Download files
+- Preview some files:
+    - images
+    - pdf
+    - docx
+    - epubs
+    - any utf8 encoded text files
+    - common audio/video formats
+    - (more on the way!)
+- Sharing
+    - create shared links to share files/folders.
+    - shared link base domain configurable
+    - shared views get the same functionality: (listing, downloading, previewing, searching), only
+    scoped to the shared path
 
 ## Run with Docker
 
@@ -63,8 +71,5 @@ That's it. Now go to http://localhost:8080 and browse.
 
 ## Configuration
 
-Default config file is in `src/default_config.yaml`. Image comes with the `fayls` server executable,
-the `extractor` bin and `tesseract` bin, so no need to install anything additional. Tesseract uses
-the English and Bulgarian lang packs. If you need to install more langs, you'd have to modify the
-image and do an `apk add tesseract-ocr-data-*` where `*` is the lang you want. Rest of the entries
-should be self-explanatory.
+Default configuration is documented and loaded from `src/default_config.yaml`. Loaded configuration
+is merged with the default one, so you don't have to copy all the entries just to overwrite a few.

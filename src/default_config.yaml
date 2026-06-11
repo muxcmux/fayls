@@ -1,29 +1,55 @@
 app:
-  tesseract_bin: tesseract
-  extractor_bin: extractor
-  ffmpeg_bin: ffmpeg
-  ffprobe_bin: ffprobe
   log_level: info
   # pico.red pico.pink pico.fuchsia pico.purple pico.violet pico.indigo
   # pico.blue pico.cyan pico.jade pico.green pico.lime pico.yellow pico.amber
   # pico.pumpkin pico.orange pico.sand pico.grey pico.zinc pico.slate
   theme: pico
+  # stores cookie secret, admin auth (encrypted), etc.
   cache_dir: data
+  # By default shared links will point to the domain fayls runs on. Change this if you want to
+  # have shared links generated to a different domain. Shared links always start with the /shared
+  # path, so if your fayls instance runs behind a private domain, and you have a public domain
+  # for shared links, make sure to allow access to /shared path (and /public for asset files).
   # share_url: https://some-publicly-visible-url
+
 preview:
+  # Unknown file types larger than this will not be attemted to be read as utf8
   max_unknown_file_size: 8388608 # 8 mib
+  # no need to change those if you run from the docker image
+  ffmpeg_bin: ffmpeg
+  ffprobe_bin: ffprobe
+  # For audio/video files, fayls uses on the fly ffmpeg transcoding and hls streaming to the
+  # browser. If you want to change the encoder to use your graphics card, you can change this to
+  # vaapi(amd/intel), nvenc(nvidia cuda), or v4l(video for linux), otherwise it defaults to libx264
+  # software encoder
+  encoder: cpu # cpu, vaapi, nvenc, v4l
+
+# self explanatory
 server:
   address: 127.0.0.1
   port: 8080
 database:
+  # path to the fayls database relative to the executable
   path: data/database.db
   max_connections: 2
 indexing:
+  # path to the tesseract executable (no need to change if you run a docker image)
+  tesseract_bin: tesseract
+  # path to the extractor program (no need to change if you run a docker image)
+  extractor_bin: extractor
+  # number of paths to write to sqlite in a single transaction
   batch_size: 1000
+  # Max number of path indexing jobs that can run at the same time
   max_concurrent_batches: 10
+  # Index file contents of at most this many files at the same time
   max_concurrent_indexers: 12
+  # give up indexing some file(s) after this many attempts
   max_retries: 5
+  # will not try indexing file contents larger than this many bytes
   max_file_size: 134217728 # 128 mib
+  # File contents are indexed into sqlite fts table. Images are ocr processed with tesseract.
+  # This can be very taxing on the cpu, so to disable it, just remove the image file extensions
+  # from this whitelist
   index_contents_whitelist:
     - "**/*.{pdf,docx,pptx,xlsx,odp,ods,odt,txt,epub,md,rtf,html,xml,png,jpg,jpeg,tif,tiff,bmp,gif,webp}"
     - "**/*.{PDF,DOCX,PPTX,XLSX,ODP,ODS,ODT,TXT,EPUB,MD,RTF,HTML,XML,PNG,JPG,JPEG,TIF,TIFF,BMP,GIF,WEBP}"

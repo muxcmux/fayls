@@ -34,6 +34,8 @@ pub struct Indexing {
     pub max_concurrent_indexers: usize,
     pub max_retries: usize,
     pub max_file_size: u64,
+    pub tesseract_bin: String,
+    pub extractor_bin: String,
     index_contents_whitelist: Vec<String>,
 }
 
@@ -50,18 +52,26 @@ impl Indexing {
 }
 
 #[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Encoder {
+    Cpu,
+    Vaapi,
+    Nvenc,
+    V4l,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 pub struct Preview {
     pub max_unknown_file_size: u64,
+    pub ffmpeg_bin: String,
+    pub ffprobe_bin: String,
+    pub encoder: Encoder,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct App {
     sources: Vec<PathBuf>,
     pub log_level: String,
-    pub tesseract_bin: String,
-    pub extractor_bin: String,
-    pub ffmpeg_bin: String,
-    pub ffprobe_bin: String,
     pub theme: String,
     pub cache_dir: PathBuf,
     pub share_url: Option<String>,

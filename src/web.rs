@@ -167,6 +167,10 @@ async fn path_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> A
 
     let authorized_path = authorize_path(PathBuf::from(path), depot)?;
 
+    _ = ExistingPathRecord::find_by_path(authorized_path.as_ref())
+        .await?
+        .ok_or(Error::NotFound)?;
+
     let access = access(depot)?;
     let page = views::page(Page::from(authorized_path.as_ref()), req, &access).await?;
 

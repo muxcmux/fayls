@@ -18,11 +18,23 @@ use salvo::{Request, Scribe, writing::Text};
 
 use crate::db::{ExistingPathRecord, PathRecordKind};
 
+fn urlencode(query: &[(&str, &str)]) -> String {
+    let mut ser = form_urlencoded::Serializer::new(String::new());
+    for (k, v) in query {
+        ser.append_pair(k, v);
+    }
+    ser.finish()
+}
+
 fn access_base_url(path: &str, access: &Access) -> String {
     match access {
         Access::Admin => path.into(),
         Access::Shared(_) => format!("/shared{path}"),
     }
+}
+
+fn access_url_with_query(endpoint: &str, query: &[(&str, &str)], access: &Access) -> String {
+    access_base_url(&format!("{endpoint}?{}", urlencode(query)), access)
 }
 
 fn files_url(path: &str, access: &Access) -> String {
@@ -33,35 +45,23 @@ fn files_url(path: &str, access: &Access) -> String {
 }
 
 fn download_url(path: &str, access: &Access) -> String {
-    access_base_url(
-        &format!("/download?path={}", access_scoped_path(path, access)),
-        access,
-    )
+    let path = access_scoped_path(path, access);
+    access_url_with_query("/download", &[("path", &path)], access)
 }
 
 fn sse_url(path: &str, access: &Access) -> String {
-    access_base_url(
-        &format!("/sse?path={}", access_scoped_path(path, access)),
-        access,
-    )
+    let path = access_scoped_path(path, access);
+    access_url_with_query("/sse", &[("path", &path)], access)
 }
 
 fn preview_url(path: &str, access: &Access) -> String {
-    access_base_url(
-        &format!("/preview?path={}", access_scoped_path(path, access)),
-        access,
-    )
+    let path = access_scoped_path(path, access);
+    access_url_with_query("/preview", &[("path", &path)], access)
 }
 
 fn preview_hls_url(path: &str, hls: &str, access: &Access) -> String {
-    access_base_url(
-        &format!(
-            "/preview?path={}&hls={}",
-            access_scoped_path(path, access),
-            hls
-        ),
-        access,
-    )
+    let path = access_scoped_path(path, access);
+    access_url_with_query("/preview", &[("path", &path), ("hls", hls)], access)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -490,7 +490,7 @@ fn breadcrumbs(view: &View, query_string: &str, access: &Access) -> Markup {
                         ul {
                             @if matches!(access, Access::Admin) {
                                 li {
-                                    @let link = format!("/share?path={}", view.path());
+                                    @let link = format!("/share?{}", urlencode(&[("path", view.path())]));
                                     a.share x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
                                         i {}
                                         "Share"
@@ -868,7 +868,8 @@ pub(crate) fn shares(
                     }
                 }
                 footer {
-                    button.outline hx-get={"/share?add=true&path=" (path_record.path_buf().display())} hx-target="#modal" {
+                    @let link = urlencode(&[("add", "true"), ("path", path_record.path_buf().to_string_lossy().as_ref())]);
+                    button.outline hx-get={"/share?" (link)} hx-target="#modal" {
                         "+ Add shared link "
                     }
                 }

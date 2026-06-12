@@ -232,9 +232,20 @@ async fn preview_handler(depot: &Depot, req: &mut Request, res: &mut Response) -
 
     let authorized_path = authorize_path(path, depot)?;
 
-    _ = ExistingPathRecord::find_by_path(authorized_path.as_ref())
+    tracing::info!(
+        "attempting to preview: {}",
+        authorized_path.as_ref().display()
+    );
+    let record = ExistingPathRecord::find_by_path(authorized_path.as_ref())
         .await?
         .ok_or(Error::NotFound)?;
+    tracing::info!(
+        "Found record: {:?} {:?} {:?}",
+        record.id,
+        record.name,
+        record.parent
+    );
+    tracing::info!("Path exists?: {:?}", authorized_path.as_ref().try_exists());
 
     if req.query::<&str>("force_inline").is_some() {
         serve_inline_file(&authorized_path, req, res).await;

@@ -1,7 +1,4 @@
-use argon2::{
-    Argon2,
-    password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
-};
+use argon2::{Argon2, password_hash::PasswordHasher};
 
 use std::{
     path::{Path, PathBuf},
@@ -528,11 +525,10 @@ impl NewShareRecord {
         self.is_valid().await?;
 
         if let Some(password) = self.password {
-            let salt = SaltString::generate(&mut OsRng);
             let argon2 = Argon2::default();
             self.password = Some(
                 argon2
-                    .hash_password(password.as_bytes(), &salt)
+                    .hash_password(password.as_bytes())
                     .map_err(|e| anyhow::anyhow!(e))?
                     .to_string(),
             );

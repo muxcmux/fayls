@@ -1,7 +1,4 @@
-use argon2::{
-    Argon2, PasswordHasher,
-    password_hash::{SaltString, rand_core::OsRng},
-};
+use argon2::{Argon2, password_hash::PasswordHasher};
 use config::{Environment, File, FileFormat};
 use glob_match::glob_match;
 use rand::RngExt;
@@ -197,10 +194,9 @@ pub(crate) fn admin_auth() -> &'static str {
 
         let auth = format!("{}:{}", get().auth.user, get().auth.pass);
 
-        let salt = SaltString::generate(&mut OsRng);
         let argon2 = Argon2::default();
         let hashed_auth = argon2
-            .hash_password(auth.as_bytes(), &salt)
+            .hash_password(auth.as_bytes())
             .expect("can't hash admin creds")
             .to_string();
 

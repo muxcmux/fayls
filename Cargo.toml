@@ -14,7 +14,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 futures-util = "0.3"
 
-salvo ={ version = "0.93", features = ["affix-state", "caching-headers", "compression", "sse", "session"] }
+salvo ={ version = "0.96", features = ["affix-state", "caching-headers", "compression", "sse", "session"] }
 # need these because salvo doesn't re-export them
 # and so you can't pass queries around in functions
 # or build query strings fffs
@@ -33,9 +33,9 @@ walkdir = "2"
 notify-debouncer-full = { version = "0.8.0-rc.2", features = ["tokio"] }
 glob-match = "0.2"
 
-base64-turbo = "0.2"
+base64-turbo = "0.3"
 nanoid = "0.5"
-argon2 = "0.5"
+argon2 = { version = "0.6", features = ["getrandom"] }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

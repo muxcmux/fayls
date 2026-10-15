@@ -3,6 +3,7 @@ use crate::{
     db::ExistingPathRecord,
     fswatch,
     indexing::{self, IndexEvent},
+    jobs::{DeleteExpiredShares, JobRunner},
     web,
 };
 use std::{sync::OnceLock, time::Duration};
@@ -86,11 +87,15 @@ pub async fn run() {
 
     tracker.spawn(fswatch::watch(token.clone(), batch_tx));
 
+    // create the runner here and add jobs to it
+    let jobs = JobRunner::new(tracker.clone(), token.clone());
+    jobs.every(Duration::from_mins(1), DeleteExpiredShares);
+
     tracker.close();
 
     _ = scan_tx.send(());
 
-    let (server, router) = web::server().await;
+    let (server, router) = web::server(jobs).await;
     let server_handle = server.handle();
 
     tokio::spawn(async move {

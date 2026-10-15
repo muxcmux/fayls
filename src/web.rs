@@ -18,6 +18,7 @@ use crate::{
     config,
     db::{ExistingPathRecord, ExistingShareRecord, NewShareRecord},
     error::{AppResult, Error},
+    jobs::JobRunner,
     web::views::Page,
 };
 use salvo::{
@@ -730,7 +731,7 @@ fn protected_routes() -> Router {
         .push(Router::with_path("sse").get(sse_connected))
 }
 
-pub(crate) async fn server() -> (Server<TcpAcceptor>, Router) {
+pub(crate) async fn server(jobs: JobRunner) -> (Server<TcpAcceptor>, Router) {
     let acceptor = TcpListener::new(config::get().server.addr()).bind().await;
 
     let session = SessionHandler::builder(CookieStore::new(), config::secret())
@@ -738,6 +739,7 @@ pub(crate) async fn server() -> (Server<TcpAcceptor>, Router) {
         .expect("failed to build session store");
 
     let router = Router::new()
+        .hoop(affix_state::inject(jobs))
         .hoop(session)
         .hoop(
             Compression::new()

@@ -4,6 +4,7 @@ pub(crate) mod db;
 pub(crate) mod error;
 pub(crate) mod fswatch;
 pub(crate) mod indexing;
+pub(crate) mod jobs;
 pub(crate) mod web;
 
 use std::path::Path;

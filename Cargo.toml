@@ -7,7 +7,7 @@ default-run = "fayls"
 
 [dependencies]
 rand = "0.10"
-tokio = { version = "1", features = ["macros", "signal", "fs", "process"] }
+tokio = { version = "1", features = ["macros", "signal", "fs", "process", "time"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio-stream = "0.1"
 tracing = "0.1"
@@ -45,6 +45,9 @@ config = "0.15"
 pdf_oxide = "0.3"
 dotext = { git = "https://github.com/anvie/dotext.git", rev = "06b1600" }
 epub = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
 
 [profile.release]
 lto = true

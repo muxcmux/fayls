@@ -454,9 +454,21 @@ pub(crate) struct ExistingShareRecord {
     pub(crate) expires_at: Option<i64>,
     pub(crate) password: Option<String>,
     pub(crate) accessed: i64,
+    #[sqlx(default)]
+    pub(crate) path_label: Option<String>,
 }
 
 impl ExistingShareRecord {
+    pub(crate) async fn all() -> Result<Vec<Self>, sqlx::Error> {
+        sqlx::query_as::<_, Self>(
+            "SELECT shares.*, CASE WHEN paths.parent IS NULL THEN '' \
+              WHEN paths.parent = '/' THEN '/' ELSE paths.parent || '/' END || paths.name AS path_label \
+             FROM shares JOIN paths ON paths.id = shares.path_id ORDER BY shares.id DESC",
+        )
+        .fetch_all(app::db())
+        .await
+    }
+
     pub(crate) async fn access(&mut self) -> Result<(), sqlx::Error> {
         self.accessed += 1;
         sqlx::query("UPDATE shares SET accessed = ? WHERE id = ?")

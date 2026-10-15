@@ -449,7 +449,7 @@ async fn open_share_modal(req: &mut Request, res: &mut Response) -> AppResult {
         ));
     } else {
         res.render(Text::Html(
-            views::shares(&path_record, &shares, None).into_string(),
+            views::shares_for_path(&path_record, &shares, None).into_string(),
         ));
     }
 
@@ -466,7 +466,7 @@ async fn create_share_handler(req: &mut Request, res: &mut Response) -> AppResul
                 let msg = Message::Success("Share link created successfully");
                 res.status_code(StatusCode::CREATED);
                 res.render(Text::Html(
-                    views::shares(&path, &shares, Some(msg)).into_string(),
+                    views::shares_for_path(&path, &shares, Some(msg)).into_string(),
                 ));
             }
             Err(e) => {
@@ -487,6 +487,12 @@ async fn create_share_handler(req: &mut Request, res: &mut Response) -> AppResul
 
 #[handler]
 async fn shares_handler(req: &Request, res: &mut Response) -> AppResult {
+    if req.query::<bool>("all").is_some_and(|v| v) {
+        let shares = ExistingShareRecord::all().await?;
+        res.render(Text::Html(views::all_shares(&shares, None).into_string()));
+        return Ok(());
+    }
+
     let path = req.query::<PathBuf>("path").ok_or(Error::NotFound)?;
 
     let path_record = ExistingPathRecord::find_by_path(&path)
@@ -495,7 +501,7 @@ async fn shares_handler(req: &Request, res: &mut Response) -> AppResult {
 
     let shares = path_record.shares().await?;
     res.render(Text::Html(
-        views::shares(&path_record, &shares, None).into_string(),
+        views::shares_for_path(&path_record, &shares, None).into_string(),
     ));
 
     Ok(())
@@ -509,19 +515,25 @@ async fn delete_share_handler(req: &Request, res: &mut Response) -> AppResult {
         .await?
         .ok_or(Error::NotFound)?;
 
-    let path_record = share_record.path().await?;
+    let all = req.query::<bool>("all").is_some_and(|a| a);
+    let path_record = if all {
+        None
+    } else {
+        Some(share_record.path().await?)
+    };
     share_record.destroy().await?;
 
-    let shares = path_record.shares().await?;
+    let shares = match &path_record {
+        Some(path) => path.shares().await?,
+        None => ExistingShareRecord::all().await?,
+    };
 
-    res.render(Text::Html(
-        views::shares(
-            &path_record,
-            &shares,
-            Some(Message::Success("Share link deleted")),
-        )
-        .into_string(),
-    ));
+    let message = Some(Message::Success("Share link deleted"));
+    let modal = match &path_record {
+        Some(path) => views::shares_for_path(path, &shares, message),
+        None => views::all_shares(&shares, message),
+    };
+    res.render(Text::Html(modal.into_string()));
 
     Ok(())
 }

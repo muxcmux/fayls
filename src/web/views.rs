@@ -482,13 +482,21 @@ fn breadcrumbs(view: &View, query_string: &str, access: &Access) -> Markup {
                         }
                     }
                 }
-                @if matches!(view, View::File(_) | View::Dir(_)) {
+                @if matches!(view, View::File(_) | View::Dir(_)) || matches!((view, access), (View::Root, Access::Admin)) {
                     details.dropdown x-ref="dropdown" {
                         summary {
                             i {}
                         }
                         ul {
-                            @if matches!(access, Access::Admin) {
+                            @if matches!((view, access), (View::Root, Access::Admin)) {
+                                li {
+                                    a.share x-on:click="$refs.dropdown.open = false" href="/shares?all=true" hx-get="/shares?all=true" hx-target="#modal" {
+                                        i {}
+                                        "View shared links"
+                                    }
+                                }
+                            }
+                            @if matches!(access, Access::Admin) && matches!(view, View::File(_) | View::Dir(_)) {
                                 li {
                                     @let link = format!("/share?{}", urlencode(&[("path", view.path())]));
                                     a.share x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
@@ -497,10 +505,12 @@ fn breadcrumbs(view: &View, query_string: &str, access: &Access) -> Markup {
                                     }
                                 }
                             }
-                            li {
-                                a.download x-on:click="$refs.dropdown.open = false" href=(download_url(view.path(), access)) {
-                                    i {}
-                                    "Download"
+                            @if matches!(view, View::File(_) | View::Dir(_)) {
+                                li {
+                                    a.download x-on:click="$refs.dropdown.open = false" href=(download_url(view.path(), access)) {
+                                        i {}
+                                        "Download"
+                                    }
                                 }
                             }
                         }
@@ -801,20 +811,56 @@ pub(crate) fn share_modal(
     }
 }
 
-pub(crate) fn shares(
+pub(crate) fn shares_for_path(
     path_record: &ExistingPathRecord,
     shares: &[ExistingShareRecord],
     message: Option<Message>,
+) -> Markup {
+    let link = urlencode(&[
+        ("add", "true"),
+        ("path", path_record.path_buf().to_string_lossy().as_ref()),
+    ]);
+    share_list_modal(
+        &html! { "Shared links for " code { (path_record.name) } },
+        shares,
+        message,
+        &html! {
+            footer {
+                button.outline hx-get={"/share?" (link)} hx-target="#modal" {
+                    "+ Add shared link "
+                }
+            }
+        },
+        "",
+        false,
+    )
+}
+
+pub(crate) fn all_shares(shares: &[ExistingShareRecord], message: Option<Message>) -> Markup {
+    share_list_modal(
+        &html! { "Shared links" },
+        shares,
+        message,
+        &html! {},
+        "?all=true",
+        true,
+    )
+}
+
+fn share_list_modal(
+    title: &Markup,
+    shares: &[ExistingShareRecord],
+    message: Option<Message>,
+    footer: &Markup,
+    delete_suffix: &str,
+    show_path_label: bool,
 ) -> Markup {
     let base_url = config::get().app.share_url.as_deref().unwrap_or("");
     html! {
         dialog open x-ref="modal" x-data="{}" {
             article "@click.outside"="$refs.modal.close()" {
                 header {
-                    span {
-                        "Shared links for "
-                        code { (path_record.name) }
-                    }
+                    span { (title) }
                     button aria-label="Close" rel="prev" x-on:click="$refs.modal.close()" {}
                 }
                 div #share-message {
@@ -838,8 +884,17 @@ pub(crate) fn shares(
                         @for share in shares {
                             tr x-data={"{url: '/shared/link/" (share.url) "' }"} {
                                 td {
-                                    span x-text="base_url" { (base_url) }
-                                    span x-text="url" { (share.url)}
+                                    @if show_path_label {
+                                        @if let Some(path_label) = &share.path_label {
+                                            @let link = files_url(path_label, &Access::Admin);
+                                            a href=(link) hx-get=(link) hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" hx-push-url="true" x-on:click="$refs.modal.close()" {
+                                                (path_label)
+                                            }
+                                        }
+                                    } @else {
+                                        span x-text="base_url" { (base_url) }
+                                        span x-text="url" { (share.url) }
+                                    }
                                     br;
 
                                     small.text-muted {
@@ -861,18 +916,13 @@ pub(crate) fn shares(
                                 }
                                 td.actions {
                                     a.copy x-ref="copy" data-tooltip="Copy link" href="#" "@click.prevent"=(copy) { i {}}
-                                    a.delete data-tooltip="Delete" href="#" hx-confirm="Are you sure?" hx-delete={ "/share/" (share.url) } hx-target="#modal" { i {}}
+                                    a.delete data-tooltip="Delete" href="#" hx-confirm="Are you sure?" hx-delete={ "/share/" (share.url) (delete_suffix) } hx-target="#modal" { i {}}
                                 }
                             }
                         }
                     }
                 }
-                footer {
-                    @let link = urlencode(&[("add", "true"), ("path", path_record.path_buf().to_string_lossy().as_ref())]);
-                    button.outline hx-get={"/share?" (link)} hx-target="#modal" {
-                        "+ Add shared link "
-                    }
-                }
+                (footer)
             }
         }
     }

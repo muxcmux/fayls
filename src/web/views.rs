@@ -884,20 +884,26 @@ fn share_list_modal(
                         @for share in shares {
                             tr x-data={"{url: '/shared/link/" (share.url) "' }"} {
                                 td {
-                                    @if show_path_label {
-                                        @if let Some(path_label) = &share.path_label {
-                                            @let link = files_url(path_label, &Access::Admin);
-                                            a href=(link) hx-get=(link) hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" hx-push-url="true" x-on:click="$refs.modal.close()" {
-                                                (path_label)
+                                    span.share-link-name {
+                                        @if show_path_label {
+                                            @if let Some(path_label) = &share.path_label {
+                                                @let link = files_url(path_label, &Access::Admin);
+                                                a href=(link) hx-get=(link) hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" hx-push-url="true" x-on:click="$refs.modal.close()" {
+                                                    (path_label)
+                                                }
                                             }
+                                        } @else {
+                                            span x-text="base_url" { (base_url) }
+                                            span x-text="url" { (share.url) }
                                         }
-                                    } @else {
-                                        span x-text="base_url" { (base_url) }
-                                        span x-text="url" { (share.url) }
                                     }
-                                    br;
 
-                                    small.text-muted {
+                                    small.text-muted.share-link-labels {
+                                        code {
+                                            "created "
+                                                time x-data={ "{ time: timeAgo(" (share.created_at) ") }" } x-text="time" datetime=(share.created_at) { (share.created_at) }
+                                        }
+                                        " "
                                         code {
                                             "accessed " (share.accessed) " times"
                                         }
@@ -907,9 +913,9 @@ fn share_list_modal(
                                         }
                                         @if let Some(time) = share.expires_at {
                                             " "
-                                                code {
-                                                    "expires "
-                                                        time x-data={ "{ time: time(" (time) ") }" } x-text="time" datetime=(time) { (time) }
+                                                code x-data={ "{ expired: " (time) " < Math.floor(Date.now() / 1000) }" } {
+                                                    span x-text="expired ? 'expired ' : 'expires '" { "expires " }
+                                                    time x-text={ "expired ? timeAgo(" (time) ") : time(" (time) ")" } datetime=(time) { (time) }
                                                 }
                                         }
                                     }

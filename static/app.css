@@ -531,10 +531,22 @@ body > main {
 .share-links {
   margin: -1rem;
   width: calc(100% + 2rem);
+  table-layout: fixed;
+
+  .share-link-name,
+  .share-link-labels {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-bottom: .2rem;
+  }
 
   .actions {
+    width: 5rem;
     text-align: right;
     white-space: nowrap;
+    padding-left: 0;
 
     a {
       display: inline-block;

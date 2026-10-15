@@ -451,6 +451,7 @@ pub(crate) struct ExistingShareRecord {
     pub(crate) id: i64,
     pub(crate) path_id: i64,
     pub(crate) url: String,
+    pub(crate) created_at: i64,
     pub(crate) expires_at: Option<i64>,
     pub(crate) password: Option<String>,
     pub(crate) accessed: i64,

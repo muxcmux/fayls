@@ -398,6 +398,32 @@ pub(crate) async fn docx_frame(path: &AuthorizedPath) -> AppResult<Markup> {
     })
 }
 
+pub(crate) async fn spreadsheet_frame(path: &AuthorizedPath) -> AppResult<Markup> {
+    let contents = tokio::fs::read(path)
+        .await
+        .map_err(|e| anyhow::anyhow!("can't read file {e}"))?;
+
+    Ok(html! {
+        (DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                link rel="stylesheet" href="/static/vendor/sheetjs/preview.css";
+                script defer src="/static/vendor/sheetjs/xlsx.full.min.js" {}
+                script defer src="/static/vendor/sheetjs/preview.js" {}
+                title { (path.as_ref().to_str().unwrap_or_default()) }
+            }
+            body {
+                template #workbook-data { (STANDARD.encode(contents)) }
+                p #status role="status" { "Loading spreadsheet…" }
+                nav #sheet-tabs aria-label="Worksheets" hidden {}
+                main #sheet-content hidden {}
+            }
+        }
+    })
+}
+
 pub(crate) async fn page(page: Page, req: &Request, access: &Access) -> AppResult<Markup> {
     Ok(match &page.view {
         View::Root => {
@@ -667,7 +693,7 @@ async fn preview_file(file_path: &Path, access: &Access) -> AppResult<Markup> {
                 iframe sandbox width="100%" height="100%" src={ (preview_url(f.as_ref(), access)) } {}
             }
         }
-        "pdf" | "docx" => {
+        "pdf" | "docx" | "xlsx" | "xls" | "ods" | "numbers" => {
             html! {
                 iframe width="100%" height="100%" src={ (preview_url(f.as_ref(), access)) } {}
             }

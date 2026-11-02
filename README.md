@@ -16,6 +16,7 @@ directory index (mod_dir), but with search and sharing functionality.
     - images
     - pdf
     - docx
+    - xlsx, xls, ods, and modern Apple Numbers spreadsheets
     - epubs
     - any utf8 encoded text files
     - common audio/video formats

@@ -1,3 +1,4 @@
+mod archive;
 pub(crate) mod av;
 pub(crate) mod views;
 
@@ -295,6 +296,18 @@ async fn download_handler(depot: &Depot, req: &mut Request, res: &mut Response) 
     _ = ExistingPathRecord::find_by_path(authorized_path.as_ref())
         .await?
         .ok_or(Error::NotFound)?;
+
+    if tokio::fs::metadata(authorized_path.as_ref())
+        .await
+        .map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => Error::NotFound,
+            _ => Error::Anyhow(error.into()),
+        })?
+        .is_dir()
+    {
+        archive::stream_directory(authorized_path.as_ref(), res)?;
+        return Ok(());
+    }
 
     NamedFile::builder(authorized_path.as_ref())
         .disposition_type("attachment")

@@ -11,7 +11,7 @@ directory index (mod_dir), but with search and sharing functionality.
 - Sort by name/last modified date/size
 - Live server updates with sse
 - Search by filename or contents
-- Download files
+- Download files and ZIP archives of directories
 - Preview some files:
     - images
     - pdf

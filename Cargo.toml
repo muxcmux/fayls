@@ -30,6 +30,7 @@ thiserror = "2"
 tempfile = "3"
 
 walkdir = "2"
+zip = { version = "9.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 notify-debouncer-full = { version = "0.8.0-rc.2", features = ["tokio"] }
 glob-match = "0.2"
 

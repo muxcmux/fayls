@@ -1145,6 +1145,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "walkdir",
+ "zip 9.3.0",
 ]
 
 [[package]]

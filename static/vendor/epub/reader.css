@@ -1,0 +1,40 @@
+:root {
+  color-scheme: light dark;
+  color: light-dark(#222, #e7eaf0);
+  background: light-dark(#fff, #171b22);
+}
+
+body, #content, #sidebar, #notedlg {
+  color: inherit;
+  background: light-dark(#fff, #171b22);
+}
+
+.arrow span {
+  color: light-dark(#b9bec6, #737d8b);
+}
+
+.arrow span:hover, .arrow:active > span, .arrow.active > span {
+  color: light-dark(#333, #e7eaf0);
+}
+
+#sidebar .menu {
+  border-bottom-color: light-dark(#bdc3c7, #454b55);
+}
+
+#sidebar .panel .box.header span.label {
+  color: light-dark(#5f6368, #b9c1cd);
+}
+
+#sidebar .panel li:hover, #sidebar .panel li.selected {
+  background-color: light-dark(#f2f3f4, #343b46) !important;
+}
+
+#sidebar .panel li #item-box span[class^="toggle-"]::before {
+  color: light-dark(#000, #e7eaf0) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  [id^="btn-"].box input {
+    filter: invert(1);
+  }
+}

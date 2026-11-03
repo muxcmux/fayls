@@ -1,0 +1,26 @@
+/* epub.js adds this stylesheet to every chapter document. */
+:root {
+  color-scheme: light dark;
+  color: light-dark(#222, #e7eaf0) !important;
+  background-color: light-dark(#fff, #171b22) !important;
+}
+
+body {
+  color: inherit !important;
+  background-color: transparent !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  /* Many books set black text and white backgrounds on their content elements. */
+  body * {
+    color: inherit !important;
+  }
+
+  body :is(article, aside, section, header, footer, main, div, p, span, h1, h2, h3, h4, h5, h6, ul, ol, li, dl, dt, dd, blockquote, pre, code, table, th, td, figure, figcaption) {
+    background-color: transparent !important;
+  }
+
+  body a {
+    color: #9bc1ff !important;
+  }
+}

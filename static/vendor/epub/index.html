@@ -13,6 +13,7 @@
 
     <link rel="icon" type="image/png" href="assets/img/favicon.png">
     <link rel="stylesheet" href="assets/css/main.css">
+    <link rel="stylesheet" href="reader.css">
 
     <script src="js/libs/jszip.min.js"></script>
     <script src="js/libs/md5.min.js"></script>
@@ -22,7 +23,20 @@
       import { Reader } from "./js/epubreader.min.js"
       const url = new URL(window.location)
       const path = url.searchParams.get("book")
-      window.onload = (e) => new Reader(path)
+      window.onload = () => {
+        const reader = new Reader(path)
+        const stylesheet = new URL("./preview.css", url).href
+        let styledRendition
+        const applyPreviewStyle = () => {
+          if (reader.rendition === styledRendition) return
+          reader.rendition.themes.register("default", stylesheet)
+          styledRendition = reader.rendition
+        }
+
+        // Reader may initialize after opening its IndexedDB store.
+        reader.on("bookready", applyPreviewStyle)
+        if (reader.rendition) applyPreviewStyle()
+      }
     </script>
   </head>
 

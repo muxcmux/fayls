@@ -56,6 +56,68 @@ body > main {
   flex-direction: column;
 }
 
+#request-progress {
+  position: fixed;
+  inset: 0 0 auto;
+  height: 3px;
+  z-index: 1000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .2s ease;
+
+  &.is-visible { opacity: 1 }
+
+  .bar {
+    width: 0;
+    height: 100%;
+    background: var(--pico-primary);
+    box-shadow: 0 0 8px var(--pico-primary);
+  }
+
+  &.is-visible .bar {
+    width: 90%;
+    transition: width 10s cubic-bezier(.04, .6, .2, 1);
+  }
+
+  &.is-complete .bar {
+    width: 100%;
+    transition: width .2s ease-out;
+  }
+}
+
+#request-error {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 999;
+  max-width: min(30rem, calc(100vw - 2rem));
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  box-shadow: 0 .3rem 1rem rgb(0 0 0 / 20%);
+
+  &[hidden] { display: none }
+
+  button {
+    flex: none;
+    width: auto;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font-size: 1.5rem;
+    line-height: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #request-progress,
+  #request-progress .bar {
+    transition: none;
+  }
+}
+
 #file-contents {
   flex-grow: 1;
   position: relative;

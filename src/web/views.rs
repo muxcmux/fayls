@@ -287,6 +287,13 @@ pub(crate) fn layout(
                 title { (title) }
             }
             body {
+                div #request-progress aria-hidden="true" {
+                    div.bar {}
+                }
+                div #request-error class="alert" role="alert" hidden {
+                    span #request-error-text {}
+                    button type="button" aria-label="Dismiss error" { "×" }
+                }
                 main #container.container-fluid x-data="{ search_q: new URLSearchParams(location.search).get('q') }" {
                     form #search hx-get=(access_base_url("/search", access)) hx-push-url="true" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" {
                         input type="search" x-model="search_q" name="q" placeholder="Search...";

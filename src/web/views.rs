@@ -218,7 +218,7 @@ impl View {
                 parts
             }
             View::Root => {
-                vec![Breadcrumb::admin_root()]
+                vec![]
             }
         }
     }
@@ -268,6 +268,7 @@ pub(crate) fn layout(
     title: &str,
     restore_from_history: bool,
     view: &Markup,
+    page: &Page,
     access: &Access,
 ) -> Markup {
     html! {
@@ -297,14 +298,7 @@ pub(crate) fn layout(
                 main #container.container-fluid x-data="{ search_q: new URLSearchParams(location.search).get('q') }" {
                     form #search hx-get=(access_base_url("/search", access)) hx-push-url="true" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" {
                         input type="search" x-model="search_q" name="q" placeholder="Search...";
-                        @if matches!(access, Access::Admin) {
-                            a href="/logout" hx-delete="/logout" hx-target="#container" {
-                                svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 16 16" {
-                                    path d="M7.5 1v7h1V1z" {}
-                                    path d="M3 8.812a5 5 0 0 1 2.578-4.375l-.485-.874A6 6 0 1 0 11 3.616l-.501.865A5 5 0 1 1 3 8.812" {}
-                                }
-                            }
-                        }
+                        (page_actions(&page.view, access, false))
                     }
                     section #view {
                         { (view) }
@@ -316,6 +310,109 @@ pub(crate) fn layout(
                 div #modal {}
             }
         }
+    }
+}
+
+pub(crate) fn partial_page(page: &Page, view: &Markup, access: &Access) -> Markup {
+    html! {
+        (view)
+        (page_actions(&page.view, access, true))
+    }
+}
+
+fn page_actions(view: &View, access: &Access, out_of_band: bool) -> Markup {
+    html! {
+        div #page-actions hx-swap-oob=[out_of_band.then_some("outerHTML")] {
+            @if matches!(access, Access::Admin) || matches!(view, View::File(_) | View::Dir(_)) {
+                details.dropdown x-ref="dropdown" {
+                    summary aria-label="Page actions" { i {} }
+                    ul {
+                        @if matches!((view, access), (View::Root, Access::Admin)) {
+                            li {
+                                a.share x-on:click="$refs.dropdown.open = false" href="/shares?all=true" hx-get="/shares?all=true" hx-target="#modal" {
+                                    i {}
+                                    "View shared links"
+                                }
+                            }
+                        }
+                        @if matches!(access, Access::Admin) && matches!(view, View::File(_) | View::Dir(_)) {
+                            li {
+                                @let link = format!("/share?{}", urlencode(&[("path", view.path())]));
+                                a.share x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
+                                    i {}
+                                    "Share"
+                                }
+                            }
+                        }
+                        @if matches!(view, View::File(_) | View::Dir(_)) {
+                            li {
+                                a.download x-on:click="$refs.dropdown.open = false" href=(download_url(view.path(), access)) {
+                                    i {}
+                                    "Download"
+                                }
+                            }
+                        }
+                        @if matches!(access, Access::Admin) {
+                            li {
+                                a.logout x-on:click="$refs.dropdown.open = false" href="/logout" hx-delete="/logout" hx-target="#container" {
+                                    i {}
+                                    "Logout"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod page_action_tests {
+    use super::*;
+
+    #[test]
+    fn actions_follow_the_view_and_only_admins_get_logout() {
+        let root = page_actions(&View::Root, &Access::Admin, false).into_string();
+        assert!(root.contains("View shared links"));
+        assert!(!root.contains("hx-swap-oob"));
+        assert!(!root.contains(">Download<"));
+        assert!(root.find("View shared links").unwrap() < root.find("Logout").unwrap());
+
+        let directory =
+            page_actions(&View::Dir(PathBuf::from("/source")), &Access::Admin, false).into_string();
+        assert!(!directory.contains("View shared links"));
+        assert!(directory.find(">Share<").unwrap() < directory.find(">Download<").unwrap());
+        assert!(directory.find(">Download<").unwrap() < directory.find(">Logout<").unwrap());
+
+        let search =
+            page_actions(&View::Search("example".into()), &Access::Admin, false).into_string();
+        assert!(!search.contains("View shared links"));
+        assert!(!search.contains(">Download<"));
+        assert!(search.contains(">Logout<"));
+
+        let shared = Access::Shared(SharedAccess {
+            expires_at: None,
+            path_buf: PathBuf::from("/source"),
+        });
+        let shared_directory =
+            page_actions(&View::Dir(PathBuf::from("/source")), &shared, false).into_string();
+        assert!(!shared_directory.contains(">Share<"));
+        assert!(shared_directory.contains(">Download<"));
+        assert!(!shared_directory.contains(">Logout<"));
+
+        let shared_search =
+            page_actions(&View::Search("example".into()), &shared, false).into_string();
+        assert!(!shared_search.contains("<details"));
+    }
+
+    #[test]
+    fn partial_page_replaces_the_search_bar_menu() {
+        let markup =
+            partial_page(&Page::root(), &html! { p { "Sources" } }, &Access::Admin).into_string();
+        assert!(markup.contains("hx-swap-oob=\"outerHTML\""));
+        assert!(markup.contains("id=\"page-actions\""));
+        assert!(markup.contains("View shared links"));
     }
 }
 
@@ -431,21 +528,16 @@ pub(crate) async fn spreadsheet_frame(path: &AuthorizedPath) -> AppResult<Markup
     })
 }
 
-pub(crate) async fn page(page: Page, req: &Request, access: &Access) -> AppResult<Markup> {
+pub(crate) async fn page(page: &Page, req: &Request, access: &Access) -> AppResult<Markup> {
     Ok(match &page.view {
         View::Root => {
-            let (sort, order) = get_sorting(req);
-
-            let roots = config::get()
+            let mut sources = config::get()
                 .app
                 .canonicalized_sources()
                 .iter()
-                .filter_map(|s| s.parent().and_then(|p| p.to_str()))
-                .collect::<Vec<&str>>();
-
-            let items = db::list_paths(&roots, &sort, &order).await?;
-
-            file_list(&page.view, &items, get_progress().await?, req, access)
+                .collect::<Vec<_>>();
+            sources.sort();
+            root_view(&sources)
         }
         View::Dir(path_buf) => {
             let (sort, order) = get_sorting(req);
@@ -459,6 +551,33 @@ pub(crate) async fn page(page: Page, req: &Request, access: &Access) -> AppResul
             file_list(&page.view, &items, get_progress().await?, req, access)
         }
     })
+}
+
+fn root_view(sources: &[&PathBuf]) -> Markup {
+    html! {
+        div.root-page {
+            section aria-labelledby="sources-heading" {
+                h2 #sources-heading { "Sources" }
+                @if sources.is_empty() {
+                    p { "No sources configured." }
+                } @else {
+                    div.source-list {
+                        @for source in sources {
+                            @let path = source.to_string_lossy();
+                            @let link = files_url(&path, &Access::Admin);
+                            @let name = source.file_name().map_or_else(|| path.clone(), |name| name.to_string_lossy());
+                            a href=(link) hx-get=(link) hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" hx-push-url="true" x-on:click="search_q = ''" title=(path) {
+                                svg aria-hidden="true" viewBox="0 0 16 16" fill="currentColor" {
+                                    path d="M9.828 3h3.982a2 2 0 0 1 1.992 2.181l-.637 7A2 2 0 0 1 13.174 14H2.825a2 2 0 0 1-1.991-1.819l-.637-7a2 2 0 0 1 .342-1.31L.5 3a2 2 0 0 1 2-2h3.672a2 2 0 0 1 1.414.586l.828.828A2 2 0 0 0 9.828 3m-8.322.12q.322-.119.684-.12h5.396l-.707-.707A1 1 0 0 0 6.172 2H2.5a1 1 0 0 0-1 .981z" {}
+                                }
+                                span { (name) }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn file_list_header(col: &Sort, sort: &Sort, order: &Order, req: &Request) -> Markup {
@@ -511,40 +630,6 @@ fn breadcrumbs(view: &View, query_string: &str, access: &Access) -> Markup {
                         li {
                             a href=(link) hx-get=(link) x-on:click="search_q = ''" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" hx-push-url="true" {
                                 (crumb.text)
-                            }
-                        }
-                    }
-                }
-                @if matches!(view, View::File(_) | View::Dir(_)) || matches!((view, access), (View::Root, Access::Admin)) {
-                    details.dropdown x-ref="dropdown" {
-                        summary {
-                            i {}
-                        }
-                        ul {
-                            @if matches!((view, access), (View::Root, Access::Admin)) {
-                                li {
-                                    a.share x-on:click="$refs.dropdown.open = false" href="/shares?all=true" hx-get="/shares?all=true" hx-target="#modal" {
-                                        i {}
-                                        "View shared links"
-                                    }
-                                }
-                            }
-                            @if matches!(access, Access::Admin) && matches!(view, View::File(_) | View::Dir(_)) {
-                                li {
-                                    @let link = format!("/share?{}", urlencode(&[("path", view.path())]));
-                                    a.share x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
-                                        i {}
-                                        "Share"
-                                    }
-                                }
-                            }
-                            @if matches!(view, View::File(_) | View::Dir(_)) {
-                                li {
-                                    a.download x-on:click="$refs.dropdown.open = false" href=(download_url(view.path(), access)) {
-                                        i {}
-                                        "Download"
-                                    }
-                                }
                             }
                         }
                     }

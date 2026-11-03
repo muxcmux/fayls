@@ -176,35 +176,13 @@ async fn path_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> A
     }
 
     let access = access(depot)?;
-    let page = views::page(Page::from(authorized_path.as_ref()), req, &access).await?;
-
-    res.render(Text::Html(
-        if is_hx(req) {
-            page
-        } else {
-            views::layout("Fayls", history_restore_requested(req), &page, &access)
-        }
-        .into_string(),
-    ));
-
-    Ok(())
+    render_page(Page::from(authorized_path.as_ref()), req, res, &access).await
 }
 
 #[handler]
 async fn list_roots_handler(depot: &Depot, req: &Request, res: &mut Response) -> AppResult {
     let access = access(depot)?;
-    let page = views::page(Page::root(), req, &access).await?;
-
-    res.render(Text::Html(
-        if is_hx(req) {
-            page
-        } else {
-            views::layout("Fayls", history_restore_requested(req), &page, &access)
-        }
-        .into_string(),
-    ));
-
-    Ok(())
+    render_page(Page::root(), req, res, &access).await
 }
 
 #[handler]
@@ -214,13 +192,22 @@ async fn search_handler(depot: &Depot, req: &mut Request, res: &mut Response) ->
         .ok_or(Error::BadRequest("no query param"))?;
 
     let access = access(depot)?;
-    let page = views::page(Page::search(term), req, &access).await?;
+    render_page(Page::search(term), req, res, &access).await
+}
 
+async fn render_page(page: Page, req: &Request, res: &mut Response, access: &Access) -> AppResult {
+    let view = views::page(&page, req, access).await?;
     res.render(Text::Html(
         if is_hx(req) {
-            page
+            views::partial_page(&page, &view, access)
         } else {
-            views::layout("Fayls", history_restore_requested(req), &page, &access)
+            views::layout(
+                "Fayls",
+                history_restore_requested(req),
+                &view,
+                &page,
+                access,
+            )
         }
         .into_string(),
     ));
@@ -439,7 +426,7 @@ async fn login(req: &mut Request, depot: &mut Depot, res: &mut Response) -> AppR
 #[handler]
 async fn logout(depot: &mut Depot, res: &mut Response) {
     if let Some(session) = depot.session_mut() {
-        session.remove("username");
+        session.remove("access");
     }
     res.render(Redirect::other("/login"));
 }

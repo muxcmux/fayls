@@ -159,12 +159,94 @@ body > main {
 }
 
 #search {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  place-items: center;
+  gap: 1rem;
+  position: relative;
+  z-index: 3;
 
-  a {
-    display: flex;
-    align-items: center;
-    margin: 0 .3rem 1rem .5rem;
+  input {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+#page-actions {
+  flex: none;
+  margin-bottom: 1rem;
+
+  details {
+    font-size: .9rem;
+    position: relative;
+
+    &.dropdown>summary+ul {
+      position: absolute;
+      top: calc(100% + .25rem);
+      right: 0;
+      bottom: auto;
+      left: auto;
+      margin-top: 0;
+    }
+
+    i {
+      display: block;
+      width: 16px;
+      height: 16px;
+      mask-repeat: no-repeat;
+      mask-position: 0 0;
+      background-color: var(--pico-color);
+    }
+
+    &.dropdown {
+      margin: 0;
+    }
+
+    summary {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 2.75rem;
+      height: 2.75rem;
+      padding: .5rem;
+      border: 1px solid var(--pico-form-element-border-color);
+      border-radius: var(--pico-border-radius);
+      background: var(--pico-form-element-background-color);
+      cursor: pointer;
+      &:after { display: none }
+
+      i {
+        mask-image: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16"><path d="M3 9.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3m5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3m5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3"/></svg>');
+      }
+    }
+
+    a {
+      display: flex;
+      align-items: center;
+
+      i {
+        margin-right: .8rem;
+      }
+
+      &.download {
+        i {
+          mask-image: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M7.646 10.854a.5.5 0 0 0 .708 0l2-2a.5.5 0 0 0-.708-.708L8.5 9.293V5.5a.5.5 0 0 0-1 0v3.793L6.354 8.146a.5.5 0 1 0-.708.708z"/><path d="M4.406 3.342A5.53 5.53 0 0 1 8 2c2.69 0 4.923 2 5.166 4.579C14.758 6.804 16 8.137 16 9.773 16 11.569 14.502 13 12.687 13H3.781C1.708 13 0 11.366 0 9.318c0-1.763 1.266-3.223 2.942-3.593.143-.863.698-1.723 1.464-2.383m.653.757c-.757.653-1.153 1.44-1.153 2.056v.448l-.445.049C2.064 6.805 1 7.952 1 9.318 1 10.785 2.23 12 3.781 12h8.906C13.98 12 15 10.988 15 9.773c0-1.216-1.02-2.228-2.313-2.228h-.5v-.5C12.188 4.825 10.328 3 8 3a4.53 4.53 0 0 0-2.941 1.1z"/></svg>');
+        }
+      }
+
+      &.share {
+        i {
+          mask-image: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16"><path d="M13.5 1a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3M11 2.5a2.5 2.5 0 1 1 .603 1.628l-6.718 3.12a2.5 2.5 0 0 1 0 1.504l6.718 3.12a2.5 2.5 0 1 1-.488.876l-6.718-3.12a2.5 2.5 0 1 1 0-3.256l6.718-3.12A2.5 2.5 0 0 1 11 2.5m-8.5 4a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3m11 5.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3"/></svg>');
+        }
+      }
+
+      &.logout {
+        i {
+          mask-image: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16"><path d="M7.5 1v7h1V1z"/><path d="M3 8.812a5 5 0 0 1 2.578-4.375l-.485-.874A6 6 0 1 0 11 3.616l-.501.865A5 5 0 1 1 3 8.812"/></svg>');
+        }
+      }
+    }
   }
 }
 
@@ -436,63 +518,10 @@ body > main {
     --ribbon-angle: 10px;
     --ribbon-spacing: 2px;
     margin-bottom: var(--pico-block-spacing-horizontal);
-
-    details {
-      font-size: .9rem;
-
-      &.dropdown>summary+ul {
-        left: unset;
-        right: 0;
-      }
-
-      i {
-        display: block;
-        width: 16px;
-        height: 16px;
-        mask-repeat: no-repeat;
-        mask-position: 0 0;
-        background-color: var(--pico-color);
-      }
-
-      &.dropdown {
-        margin: 0 0 0 .5rem;
-      }
-
-      summary {
-        display: flex;
-        align-items: center;
-        &:after { display: none }
-
-        i {
-          mask-image: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16"><path d="M3 9.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3m5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3m5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3"/></svg>');
-        }
-      }
-
-      a {
-        display: flex;
-        align-items: center;
-
-        i {
-          margin-right: .8rem;
-        }
-
-        &.download {
-          i {
-            mask-image: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16"><path fill-rule="evenodd" d="M7.646 10.854a.5.5 0 0 0 .708 0l2-2a.5.5 0 0 0-.708-.708L8.5 9.293V5.5a.5.5 0 0 0-1 0v3.793L6.354 8.146a.5.5 0 1 0-.708.708z"/><path d="M4.406 3.342A5.53 5.53 0 0 1 8 2c2.69 0 4.923 2 5.166 4.579C14.758 6.804 16 8.137 16 9.773 16 11.569 14.502 13 12.687 13H3.781C1.708 13 0 11.366 0 9.318c0-1.763 1.266-3.223 2.942-3.593.143-.863.698-1.723 1.464-2.383m.653.757c-.757.653-1.153 1.44-1.153 2.056v.448l-.445.049C2.064 6.805 1 7.952 1 9.318 1 10.785 2.23 12 3.781 12h8.906C13.98 12 15 10.988 15 9.773c0-1.216-1.02-2.228-2.313-2.228h-.5v-.5C12.188 4.825 10.328 3 8 3a4.53 4.53 0 0 0-2.941 1.1z"/></svg>');
-          }
-        }
-
-        &.share {
-          i {
-            mask-image: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16"><path d="M13.5 1a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3M11 2.5a2.5 2.5 0 1 1 .603 1.628l-6.718 3.12a2.5 2.5 0 0 1 0 1.504l6.718 3.12a2.5 2.5 0 1 1-.488.876l-6.718-3.12a2.5 2.5 0 1 1 0-3.256l6.718-3.12A2.5 2.5 0 0 1 11 2.5m-8.5 4a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3m11 5.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3"/></svg>');
-          }
-        }
-      }
-    }
   }
 
   #breadcrumbs {
-    max-width: calc(100% - 45px);
+    max-width: 100%;
     margin-left: var(--ribbon-angle);
 
     li {
@@ -539,6 +568,55 @@ body > main {
           --pico-color: unset;
           background: transparent;
         }
+      }
+    }
+  }
+}
+
+.root-page {
+  width: 100%;
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: clamp(1rem, 3vw, 3rem) 0 3rem;
+
+  h2 {
+    margin-bottom: 1.25rem;
+    font-size: 1.3rem;
+  }
+
+  .source-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+    gap: 1rem;
+
+    a {
+      min-height: 10rem;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1rem;
+      padding: 1.25rem .75rem;
+      border: 1px solid var(--pico-form-element-border-color);
+      border-radius: var(--pico-border-radius);
+      background: var(--pico-form-element-background-color);
+      color: var(--pico-color);
+      text-align: center;
+      text-decoration: none;
+
+      &:hover {
+        border-color: var(--pico-primary);
+      }
+
+      svg {
+        width: 4rem;
+        height: 4rem;
+        color: var(--pico-primary);
+      }
+
+      span {
+        max-width: 100%;
+        overflow-wrap: anywhere;
       }
     }
   }

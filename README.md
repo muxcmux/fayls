@@ -18,6 +18,7 @@ directory index (mod_dir), but with search and sharing functionality.
     - docx
     - xlsx, xls, ods, and modern Apple Numbers spreadsheets
     - epubs
+    - gltf, glb, ply, and stl 3D models
     - any utf8 encoded text files
     - common audio/video formats
     - (more on the way!)

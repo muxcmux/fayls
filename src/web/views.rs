@@ -528,6 +528,46 @@ pub(crate) async fn spreadsheet_frame(path: &AuthorizedPath) -> AppResult<Markup
     })
 }
 
+pub(crate) fn model_frame(path: &AuthorizedPath, access: &Access) -> Markup {
+    let source = format!(
+        "{}&force_inline=true",
+        preview_url(&path.as_ref().to_string_lossy(), access)
+    );
+    let format = path
+        .as_ref()
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    html! {
+        (DOCTYPE)
+        html {
+            head {
+                meta charset="utf-8";
+                meta name="viewport" content="width=device-width, initial-scale=1";
+                title { (path.as_ref().to_string_lossy()) }
+                link rel="stylesheet" href="/static/vendor/model-preview.css";
+                script type="importmap" {
+                    (PreEscaped(r#"{
+                        "imports": {
+                            "three": "https://cdn.jsdelivr.net/npm/three@0.187.0/build/three.module.js",
+                            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.187.0/examples/jsm/"
+                        }
+                    }"#))
+                }
+                script type="module" src="https://ajax.googleapis.com/ajax/libs/model-viewer/4.4.0/model-viewer.min.js" {}
+                script type="module" src="/static/vendor/model-preview.js" {}
+            }
+            body {
+                model-viewer #model data-src=(source) data-format=(format)
+                    alt="3D model preview" camera-controls loading="eager" shadow-intensity="1" {}
+                p #status role="status" { "Loading 3D model…" }
+            }
+        }
+    }
+}
+
 pub(crate) async fn page(page: &Page, req: &Request, access: &Access) -> AppResult<Markup> {
     Ok(match &page.view {
         View::Root => {
@@ -785,7 +825,7 @@ async fn preview_file(file_path: &Path, access: &Access) -> AppResult<Markup> {
                 iframe sandbox width="100%" height="100%" src={ (preview_url(f.as_ref(), access)) } {}
             }
         }
-        "pdf" | "docx" | "xlsx" | "xls" | "ods" | "numbers" => {
+        "pdf" | "docx" | "xlsx" | "xls" | "ods" | "numbers" | "gltf" | "glb" | "ply" | "stl" => {
             html! {
                 iframe width="100%" height="100%" src={ (preview_url(f.as_ref(), access)) } {}
             }

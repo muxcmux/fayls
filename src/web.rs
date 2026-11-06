@@ -242,6 +242,11 @@ async fn preview_handler(depot: &Depot, req: &mut Request, res: &mut Response) -
             "xlsx" | "xls" | "ods" | "numbers" => {
                 preview_spreadsheet_file(&authorized_path, res).await?;
             }
+            "gltf" | "glb" | "ply" | "stl" => {
+                res.render(Text::Html(
+                    views::model_frame(&authorized_path, &access(depot)?).into_string(),
+                ));
+            }
             ext if av::is_media_file_extension(ext) => {
                 av::preview_media_file(&authorized_path, req, res).await?;
             }

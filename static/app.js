@@ -131,3 +131,16 @@ function hls(el, src) {
     el.src = src;
   }
 }
+
+let fontPreviewSequence = 0;
+
+async function loadFontPreview(url, signal) {
+  const response = await fetch(url, { signal });
+  if (!response.ok) throw new Error(`file request failed (${response.status})`);
+
+  const face = new FontFace(`FaylsFontPreview${++fontPreviewSequence}`, await response.arrayBuffer());
+  await face.load();
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+  document.fonts.add(face);
+  return face;
+}

@@ -367,55 +367,6 @@ fn page_actions(view: &View, access: &Access, out_of_band: bool) -> Markup {
     }
 }
 
-#[cfg(test)]
-mod page_action_tests {
-    use super::*;
-
-    #[test]
-    fn actions_follow_the_view_and_only_admins_get_logout() {
-        let root = page_actions(&View::Root, &Access::Admin, false).into_string();
-        assert!(root.contains("View shared links"));
-        assert!(!root.contains("hx-swap-oob"));
-        assert!(!root.contains(">Download<"));
-        assert!(root.find("View shared links").unwrap() < root.find("Logout").unwrap());
-
-        let directory =
-            page_actions(&View::Dir(PathBuf::from("/source")), &Access::Admin, false).into_string();
-        assert!(!directory.contains("View shared links"));
-        assert!(directory.find(">Share<").unwrap() < directory.find(">Download<").unwrap());
-        assert!(directory.find(">Download<").unwrap() < directory.find(">Logout<").unwrap());
-
-        let search =
-            page_actions(&View::Search("example".into()), &Access::Admin, false).into_string();
-        assert!(!search.contains("View shared links"));
-        assert!(!search.contains(">Download<"));
-        assert!(search.contains(">Logout<"));
-
-        let shared = Access::Shared(SharedAccess {
-            expires_at: None,
-            path_buf: PathBuf::from("/source"),
-        });
-        let shared_directory =
-            page_actions(&View::Dir(PathBuf::from("/source")), &shared, false).into_string();
-        assert!(!shared_directory.contains(">Share<"));
-        assert!(shared_directory.contains(">Download<"));
-        assert!(!shared_directory.contains(">Logout<"));
-
-        let shared_search =
-            page_actions(&View::Search("example".into()), &shared, false).into_string();
-        assert!(!shared_search.contains("<details"));
-    }
-
-    #[test]
-    fn partial_page_replaces_the_search_bar_menu() {
-        let markup =
-            partial_page(&Page::root(), &html! { p { "Sources" } }, &Access::Admin).into_string();
-        assert!(markup.contains("hx-swap-oob=\"outerHTML\""));
-        assert!(markup.contains("id=\"page-actions\""));
-        assert!(markup.contains("View shared links"));
-    }
-}
-
 pub(crate) fn login(message: Option<Message>, username: Option<&String>) -> Markup {
     html! {
         (DOCTYPE)
@@ -526,6 +477,55 @@ pub(crate) async fn spreadsheet_frame(path: &AuthorizedPath) -> AppResult<Markup
             }
         }
     })
+}
+
+fn font_preview(path: &Path, access: &Access) -> Markup {
+    let source = preview_url(&path.to_string_lossy(), access);
+    let sample = "The quick brown fox jumps over the lazy dog.";
+
+    html! {
+        article #font-preview data-src=(source) x-init="load($el)"
+            x-data=r"{
+                sample: 'The quick brown fox jumps over the lazy dog.',
+                ready: false,
+                error: '',
+                face: null,
+                controller: new AbortController(),
+                async load(element) {
+                    try {
+                        this.face = await loadFontPreview(element.dataset.src, this.controller.signal);
+                        element.style.setProperty('--font-preview-family', this.face.family);
+                        this.ready = true;
+                    } catch (error) {
+                        if (error.name !== 'AbortError') this.error = error.message || 'unknown error';
+                    }
+                },
+                destroy() {
+                    this.controller.abort();
+                    if (this.face) document.fonts.delete(this.face);
+                }
+            }" {
+            p x-show="!ready && !error" role="status" { "Loading font…" }
+            p x-show="error" x-text="'Could not preview this font: ' + error" x-cloak role="alert" {}
+            header {
+                select x-model="sample" x-bind:disabled="!ready" disabled {
+                    option value=(sample) { (sample) }
+                    option value="Pack my box with five dozen liquor jugs." { "Pack my box with five dozen liquor jugs." }
+                    option value="Sphinx of black quartz, judge my vow." { "Sphinx of black quartz, judge my vow." }
+                    option value="How vexingly quick daft zebras jump!" { "How vexingly quick daft zebras jump!" }
+                }
+            }
+            main x-show="ready" x-cloak {
+                h1 class="sample-text" x-text="sample" { (sample) }
+                h2 class="sample-text" x-text="sample" { (sample) }
+                h3 class="sample-text" x-text="sample" { (sample) }
+                h4 class="sample-text" x-text="sample" { (sample) }
+                h5 class="sample-text" x-text="sample" { (sample) }
+                h6 class="sample-text" x-text="sample" { (sample) }
+                p class="sample-text" x-text="sample" { (sample) }
+            }
+        }
+    }
 }
 
 pub(crate) fn model_frame(path: &AuthorizedPath, access: &Access) -> Markup {
@@ -825,6 +825,7 @@ async fn preview_file(file_path: &Path, access: &Access) -> AppResult<Markup> {
                 iframe sandbox width="100%" height="100%" src={ (preview_url(f.as_ref(), access)) } {}
             }
         }
+        "otf" | "ttf" | "woff" => font_preview(file_path, access),
         "pdf" | "docx" | "xlsx" | "xls" | "ods" | "numbers" | "gltf" | "glb" | "ply" | "stl" => {
             html! {
                 iframe width="100%" height="100%" src={ (preview_url(f.as_ref(), access)) } {}
@@ -1123,5 +1124,54 @@ pub(crate) fn shared_link_password(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod page_action_tests {
+    use super::*;
+
+    #[test]
+    fn actions_follow_the_view_and_only_admins_get_logout() {
+        let root = page_actions(&View::Root, &Access::Admin, false).into_string();
+        assert!(root.contains("View shared links"));
+        assert!(!root.contains("hx-swap-oob"));
+        assert!(!root.contains(">Download<"));
+        assert!(root.find("View shared links").unwrap() < root.find("Logout").unwrap());
+
+        let directory =
+            page_actions(&View::Dir(PathBuf::from("/source")), &Access::Admin, false).into_string();
+        assert!(!directory.contains("View shared links"));
+        assert!(directory.find(">Share<").unwrap() < directory.find(">Download<").unwrap());
+        assert!(directory.find(">Download<").unwrap() < directory.find(">Logout<").unwrap());
+
+        let search =
+            page_actions(&View::Search("example".into()), &Access::Admin, false).into_string();
+        assert!(!search.contains("View shared links"));
+        assert!(!search.contains(">Download<"));
+        assert!(search.contains(">Logout<"));
+
+        let shared = Access::Shared(SharedAccess {
+            expires_at: None,
+            path_buf: PathBuf::from("/source"),
+        });
+        let shared_directory =
+            page_actions(&View::Dir(PathBuf::from("/source")), &shared, false).into_string();
+        assert!(!shared_directory.contains(">Share<"));
+        assert!(shared_directory.contains(">Download<"));
+        assert!(!shared_directory.contains(">Logout<"));
+
+        let shared_search =
+            page_actions(&View::Search("example".into()), &shared, false).into_string();
+        assert!(!shared_search.contains("<details"));
+    }
+
+    #[test]
+    fn partial_page_replaces_the_search_bar_menu() {
+        let markup =
+            partial_page(&Page::root(), &html! { p { "Sources" } }, &Access::Admin).into_string();
+        assert!(markup.contains("hx-swap-oob=\"outerHTML\""));
+        assert!(markup.contains("id=\"page-actions\""));
+        assert!(markup.contains("View shared links"));
     }
 }

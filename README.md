@@ -15,7 +15,7 @@ directory index (mod_dir), but with search and sharing functionality.
 - Preview some files:
     - images
     - pdf
-    - docx
+    - docx, pptx, and supported legacy doc/ppt files
     - xlsx, xls, ods, and modern Apple Numbers spreadsheets
     - epubs
     - ttf, otf, and woff fonts

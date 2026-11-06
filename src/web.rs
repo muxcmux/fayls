@@ -238,7 +238,6 @@ async fn preview_handler(depot: &Depot, req: &mut Request, res: &mut Response) -
         .and_then(|e| e.to_str())
     {
         Some(ext) => match ext.to_ascii_lowercase().as_ref() {
-            "docx" => preview_docx_file(&authorized_path, res).await?,
             "xlsx" | "xls" | "ods" | "numbers" => {
                 preview_spreadsheet_file(&authorized_path, res).await?;
             }
@@ -263,11 +262,6 @@ async fn serve_inline_file(path: &AuthorizedPath, req: &mut Request, res: &mut R
         .disposition_type("inline")
         .send(req.headers(), res)
         .await;
-}
-
-async fn preview_docx_file(path: &AuthorizedPath, res: &mut Response) -> AppResult {
-    res.render(Text::Html(views::docx_frame(path).await?.into_string()));
-    Ok(())
 }
 
 async fn preview_spreadsheet_file(path: &AuthorizedPath, res: &mut Response) -> AppResult {

@@ -279,6 +279,17 @@ pub(crate) fn layout(
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 link rel="stylesheet" href={ "https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/" (config::get().app.theme) ".min.css" };
                 link rel="stylesheet" href="/static/app.css";
+                script type="importmap" {
+                    (PreEscaped(r#"{
+                        "imports": {
+                            "@silurus/ooxml/docx": "https://cdn.jsdelivr.net/npm/@silurus/ooxml@0.89.7/dist/docx.mjs",
+                            "@silurus/ooxml/pptx": "https://cdn.jsdelivr.net/npm/@silurus/ooxml@0.89.7/dist/pptx.mjs",
+                            "@silurus/ooxml/internal/companion": "https://cdn.jsdelivr.net/npm/@silurus/ooxml@0.89.7/dist/internal-companion.mjs",
+                            "@silurus/ooxml-legacy-office/doc": "https://cdn.jsdelivr.net/npm/@silurus/ooxml-legacy-office@0.89.7/dist/doc.mjs",
+                            "@silurus/ooxml-legacy-office/ppt": "https://cdn.jsdelivr.net/npm/@silurus/ooxml-legacy-office@0.89.7/dist/ppt.mjs"
+                        }
+                    }"#))
+                }
                 script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/htmx.min.js" {}
                 script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/ext/hx-sse.min.js" {}
                 script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js" {}
@@ -399,58 +410,98 @@ pub(crate) fn login(message: Option<Message>, username: Option<&String>) -> Mark
     }
 }
 
-pub(crate) async fn docx_frame(path: &AuthorizedPath) -> AppResult<Markup> {
-    let contents = tokio::fs::read(path)
-        .await
-        .map_err(|e| anyhow::anyhow!("can't read file {e}"))?;
+fn office_preview(path: &Path, access: &Access) -> Markup {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let presentation = extension == "ppt" || extension == "pptx";
+    let legacy = extension == "doc" || extension == "ppt";
+    let source = format!(
+        "{}&force_inline=true",
+        preview_url(&path.to_string_lossy(), access)
+    );
 
-    Ok(html! {
-        (DOCTYPE)
-        html {
-            head {
-                meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
-                script src="https://unpkg.com/jszip/dist/jszip.min.js" {}
-                script src="https://unpkg.com/docx-preview/dist/docx-preview.min.js" {}
-                title { (path.as_ref().to_str().unwrap_or_default()) }
-                script type="text/javascript" {
-                    (PreEscaped("
-                        document.addEventListener('DOMContentLoaded', (_) => {
-                            const template = document.body.querySelector('template');
-                            const contents = template.content.textContent.trim();
-                            const blob = Uint8Array.fromBase64(contents);
-                            const opts = { useBase64URL: true };
-                            docx.renderAsync(blob, main, null, opts).then(() => {
-                                main.style = 'display: unset';
-                                main.querySelector('.docx-wrapper').style = 'background: var(--bg)'
-                            });
-                        });
-                    "))
-                }
-                style {
-                    (PreEscaped("
-                        :root {
-                          --bg: #e7eaf0;
-                          @media (prefers-color-scheme: dark) {
-                            --bg: #202632;
-                          }
+    html! {
+        div #office-preview
+            data-src=(source)
+            data-kind=(if presentation { "pptx" } else { "docx" })
+            data-legacy=(legacy)
+            x-init="load()"
+            x-data=r"(() => {
+                let engine, viewer, observer, kind, disposed = false;
+                return {
+                    pages: [], current: 0, error: '',
+                    async load() {
+                        try {
+                            kind = this.$el.dataset.kind;
+                            const office = await import(kind === 'docx' ? '@silurus/ooxml/docx' : '@silurus/ooxml/pptx');
+                            if (disposed) return;
+                            const options = {};
+                            if (this.$el.dataset.legacy === 'true') {
+                                const reader = kind === 'docx' ? 'doc' : 'ppt';
+                                const legacy = await import('@silurus/ooxml-legacy-office/' + reader);
+                                options[kind === 'docx' ? 'legacyDoc' : 'legacyPpt'] = legacy[kind === 'docx' ? 'legacyDoc' : 'legacyPpt'];
+                            }
+                            if (disposed) return;
+                            const document = kind === 'docx'
+                                ? await office.DocxDocument.load(this.$el.dataset.src, options)
+                                : await office.PptxPresentation.load(this.$el.dataset.src, options);
+                            if (disposed) { document.destroy(); return; }
+                            engine = document;
+                            viewer = kind === 'docx'
+                                ? office.DocxViewer.fromDocument(this.$refs.page, document, { enableTextSelection: true })
+                                : office.PptxViewer.fromPresentation(this.$refs.page, document, { enableTextSelection: true });
+                            await this.show(0);
+                            if (disposed) return;
+                            this.pages = Array.from({ length: kind === 'docx' ? document.pageCount : document.slideCount }, (_, i) => i);
+                            observer = new ResizeObserver(() => viewer.fitWidth());
+                            observer.observe(this.$refs.stage);
+                        } catch (error) {
+                            if (disposed) return;
+                            this.error = error.code === 'unsupported-content'
+                                ? 'This older Office file is not supported. Convert it to DOCX or PPTX to preview it.'
+                                : error.message || 'Preview failed.';
                         }
-                        main { display: none }
-                        body {
-                            background: var(--bg);
-                            margin: 0;
-                        }
-                    "))
+                    },
+                    async show(index) {
+                        if (!viewer) return;
+                        if (kind === 'docx') await viewer.goToPage(index);
+                        else await viewer.goToSlide(index);
+                        this.current = index;
+                        await viewer.fitWidth();
+                    },
+                    async thumbnail(canvas, index) {
+                        if (kind === 'docx') await engine.renderPage(canvas, index, { width: 160 });
+                        else await engine.renderSlide(canvas, index, { width: 160 });
+                    },
+                    destroy() {
+                        if (disposed) return;
+                        disposed = true;
+                        observer?.disconnect();
+                        viewer?.destroy();
+                        engine?.destroy();
+                    }
+                }})()" {
+            p #office-status x-show="!pages.length && !error" role="status" { "Loading preview…" }
+            p #office-error x-show="error" x-text="error" x-cloak role="alert" {}
+            nav #office-thumbnails x-show="pages.length" x-cloak aria-label=(if presentation { "Slides" } else { "Pages" }) {
+                template x-for="page in pages" ":key"="page" {
+                    button type="button" "@click"="show(page)" ":aria-current"="current === page ? 'page' : null"
+                        ":aria-label"={ (if presentation { "'Slide '" } else { "'Page '" }) " + (page + 1)" } {
+                        canvas x-init="thumbnail($el, page)" aria-hidden="true" {}
+                        span x-text="page + 1" {}
+                    }
                 }
             }
-            body {
-                template {
-                    (STANDARD.encode(contents))
+            section #office-detail x-show="pages.length" x-cloak aria-label=(if presentation { "Current slide" } else { "Current page" }) {
+                div #office-stage x-ref="stage" {
+                    canvas x-ref="page" {}
                 }
-                main #main {}
             }
         }
-    })
+    }
 }
 
 pub(crate) async fn spreadsheet_frame(path: &AuthorizedPath) -> AppResult<Markup> {
@@ -826,7 +877,8 @@ async fn preview_file(file_path: &Path, access: &Access) -> AppResult<Markup> {
             }
         }
         "otf" | "ttf" | "woff" => font_preview(file_path, access),
-        "pdf" | "docx" | "xlsx" | "xls" | "ods" | "numbers" | "gltf" | "glb" | "ply" | "stl" => {
+        "doc" | "docx" | "ppt" | "pptx" => office_preview(file_path, access),
+        "pdf" | "xlsx" | "xls" | "ods" | "numbers" | "gltf" | "glb" | "ply" | "stl" => {
             html! {
                 iframe width="100%" height="100%" src={ (preview_url(f.as_ref(), access)) } {}
             }

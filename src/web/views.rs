@@ -942,7 +942,7 @@ fn no_preview(f: &str, access: &Access) -> Markup {
         div.no-preview {
             h4 { "No preview is available for this file." }
             p {
-                button href={ (download_url(f, access)) } { "Download" }
+                a role="button" href={ (download_url(f, access)) } { "Download" }
             }
         }
     }

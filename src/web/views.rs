@@ -430,13 +430,13 @@ fn office_preview(path: &Path, access: &Access) -> Markup {
             data-legacy=(legacy)
             x-init="load()"
             x-data=r"(() => {
-                let engine, viewer, observer, kind, disposed = false;
+                let engine, viewer, scrollViewer, observer, media, onMediaChange, office, kind, disposed = false;
                 return {
-                    pages: [], current: 0, error: '',
+                    pages: [], current: 0, error: '', mobile: matchMedia('(max-width: 640px)').matches,
                     async load() {
                         try {
                             kind = this.$el.dataset.kind;
-                            const office = await import(kind === 'docx' ? '@silurus/ooxml/docx' : '@silurus/ooxml/pptx');
+                            office = await import(kind === 'docx' ? '@silurus/ooxml/docx' : '@silurus/ooxml/pptx');
                             if (disposed) return;
                             const options = {};
                             if (this.$el.dataset.legacy === 'true') {
@@ -450,19 +450,49 @@ fn office_preview(path: &Path, access: &Access) -> Markup {
                                 : await office.PptxPresentation.load(this.$el.dataset.src, options);
                             if (disposed) { document.destroy(); return; }
                             engine = document;
-                            viewer = kind === 'docx'
-                                ? office.DocxViewer.fromDocument(this.$refs.page, document, { enableTextSelection: true })
-                                : office.PptxViewer.fromPresentation(this.$refs.page, document, { enableTextSelection: true });
-                            await this.show(0);
-                            if (disposed) return;
+                            media = matchMedia('(max-width: 640px)');
+                            this.mobile = media.matches;
                             this.pages = Array.from({ length: kind === 'docx' ? document.pageCount : document.slideCount }, (_, i) => i);
-                            observer = new ResizeObserver(() => viewer.fitWidth());
+                            onMediaChange = () => {
+                                this.mobile = media.matches;
+                                this.$nextTick(() => this.switchView());
+                            };
+                            media.addEventListener('change', onMediaChange);
+                            await this.$nextTick();
+                            if (disposed) return;
+                            await this.switchView();
+                            observer = new ResizeObserver(() => viewer?.fitWidth());
                             observer.observe(this.$refs.stage);
                         } catch (error) {
                             if (disposed) return;
                             this.error = error.code === 'unsupported-content'
                                 ? 'This older Office file is not supported. Convert it to DOCX or PPTX to preview it.'
                                 : error.message || 'Preview failed.';
+                        }
+                    },
+                    async switchView() {
+                        if (disposed || !engine) return;
+                        if (this.mobile) {
+                            if (scrollViewer) return;
+                            viewer?.destroy();
+                            viewer = null;
+                            scrollViewer = kind === 'docx'
+                                ? office.DocxScrollViewer.fromDocument(this.$refs.scroll, engine, { enableTextSelection: true })
+                                : office.PptxScrollViewer.fromPresentation(this.$refs.scroll, engine, { enableTextSelection: true });
+                            scrollViewer.fitWidth();
+                            if (kind === 'docx') scrollViewer.scrollToPage(this.current);
+                            else scrollViewer.scrollToSlide(this.current);
+                        } else {
+                            if (viewer) return;
+                            if (scrollViewer) {
+                                this.current = kind === 'docx' ? scrollViewer.topVisiblePage : scrollViewer.topVisibleSlide;
+                                scrollViewer.destroy();
+                                scrollViewer = null;
+                            }
+                            viewer = kind === 'docx'
+                                ? office.DocxViewer.fromDocument(this.$refs.page, engine, { enableTextSelection: true })
+                                : office.PptxViewer.fromPresentation(this.$refs.page, engine, { enableTextSelection: true });
+                            await this.show(this.current);
                         }
                     },
                     async show(index) {
@@ -479,15 +509,17 @@ fn office_preview(path: &Path, access: &Access) -> Markup {
                     destroy() {
                         if (disposed) return;
                         disposed = true;
+                        media?.removeEventListener('change', onMediaChange);
                         observer?.disconnect();
                         viewer?.destroy();
+                        scrollViewer?.destroy();
                         engine?.destroy();
                     }
                 }})()" {
             p #office-status x-show="!pages.length && !error" role="status" { "Loading preview…" }
             p #office-error x-show="error" x-text="error" x-cloak role="alert" {}
             nav #office-thumbnails x-show="pages.length" x-cloak aria-label=(if presentation { "Slides" } else { "Pages" }) {
-                template x-for="page in pages" ":key"="page" {
+                template x-for="page in mobile ? [] : pages" ":key"="page" {
                     button type="button" "@click"="show(page)" ":aria-current"="current === page ? 'page' : null"
                         ":aria-label"={ (if presentation { "'Slide '" } else { "'Page '" }) " + (page + 1)" } {
                         canvas x-init="thumbnail($el, page)" aria-hidden="true" {}
@@ -495,11 +527,12 @@ fn office_preview(path: &Path, access: &Access) -> Markup {
                     }
                 }
             }
-            section #office-detail x-show="pages.length" x-cloak aria-label=(if presentation { "Current slide" } else { "Current page" }) {
+            section #office-detail x-show="pages.length && !mobile" x-cloak aria-label=(if presentation { "Current slide" } else { "Current page" }) {
                 div #office-stage x-ref="stage" {
                     canvas x-ref="page" {}
                 }
             }
+            section #office-scroll x-ref="scroll" x-show="pages.length && mobile" x-cloak aria-label=(if presentation { "Slides" } else { "Pages" }) {}
         }
     }
 }

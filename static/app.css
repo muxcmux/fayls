@@ -203,6 +203,20 @@ body > main {
     padding: 1rem;
     text-align: center;
   }
+
+  #office-scroll {
+    display: none;
+    height: 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  #office-preview {
+    display: block;
+
+    #office-thumbnails, #office-detail { display: none !important; }
+    #office-scroll { display: block; }
+  }
 }
 
 @media (prefers-color-scheme: dark) {

@@ -314,7 +314,6 @@ pub(crate) fn layout(
                 main #container.container-fluid x-data="{ search_q: new URLSearchParams(location.search).get('q') }" {
                     form #search hx-get=(access_base_url("/search", access)) hx-push-url="true" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" {
                         input type="search" x-model="search_q" name="q" placeholder="Search...";
-                        (page_actions(&page.view, access, false))
                     }
                     section #view {
                         { (view) }
@@ -322,6 +321,7 @@ pub(crate) fn layout(
                             script { (PreEscaped("setTimeout(() => { htmx.process(document.body) }, 10)")) }
                         }
                     }
+                    (page_actions(&page.view, access, false))
                 }
                 div #modal {}
             }
@@ -352,12 +352,12 @@ fn page_actions(view: &View, access: &Access, out_of_band: bool) -> Markup {
                             }
                         }
                         @if matches!(access, Access::Admin) && matches!(view, View::File(_) | View::Dir(_)) {
+                            @let parent = match view {
+                                View::Dir(path) => path.as_path(),
+                                View::File(path) => path.parent().unwrap_or(path),
+                                _ => unreachable!(),
+                            };
                             li {
-                                @let parent = match view {
-                                    View::Dir(path) => path.as_path(),
-                                    View::File(path) => path.parent().unwrap_or(path),
-                                    _ => unreachable!(),
-                                };
                                 @let link = format!("/new-folder?{}", urlencode(&[("parent", &parent.to_string_lossy())]));
                                 a.new-folder x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
                                     i {}

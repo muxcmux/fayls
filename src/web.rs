@@ -16,7 +16,7 @@ use std::{
 
 use crate::web::views::Message;
 use crate::{
-    config,
+    config, create_folder,
     db::{ExistingPathRecord, ExistingShareRecord, NewShareRecord},
     error::{AppResult, Error},
     jobs::JobRunner,
@@ -467,6 +467,31 @@ async fn open_share_modal(req: &mut Request, res: &mut Response) -> AppResult {
 }
 
 #[handler]
+async fn new_folder_handler(req: &mut Request, res: &mut Response) -> AppResult {
+    if req.method() == salvo::http::Method::GET {
+        let parent = req.query::<PathBuf>("parent").unwrap_or_default();
+        res.render(Text::Html(views::new_folder_modal(&parent).into_string()));
+        return Ok(());
+    }
+
+    let parent = req.form::<PathBuf>("parent").await.unwrap_or_default();
+    let name = req.form::<String>("name").await.unwrap_or_default();
+    match create_folder(&parent, &name).await {
+        Ok(()) => {
+            res.status_code(StatusCode::CREATED);
+            _ = res.add_header("HX-Trigger", "folder-created", true);
+            res.render(Text::Html(String::new()));
+        }
+        Err(message) => {
+            res.status_code(StatusCode::UNPROCESSABLE_ENTITY);
+            _ = res.add_header("HX-Retarget", "#new-folder-error", true);
+            res.render(Message::Error(message));
+        }
+    }
+    Ok(())
+}
+
+#[handler]
 async fn create_share_handler(req: &mut Request, res: &mut Response) -> AppResult {
     match req.parse_form::<NewShareRecord>().await {
         Ok(new_record) => match new_record.save().await {
@@ -721,6 +746,11 @@ fn admin_routes() -> Router {
         .get(list_roots_handler)
         .push(Router::with_path("files").get(list_roots_handler))
         .push(Router::with_path("logout").delete(logout))
+        .push(
+            Router::with_path("new-folder")
+                .get(new_folder_handler)
+                .post(new_folder_handler),
+        )
         .push(
             Router::with_path("share")
                 .get(open_share_modal)

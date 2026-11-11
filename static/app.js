@@ -60,6 +60,16 @@ function showRequestError(message) {
   document.getElementById('request-error').hidden = false;
 }
 
+let notificationTimer;
+
+htmx.on('folder-created', () => {
+  const notification = document.getElementById('notification');
+  document.getElementById('notification-text').textContent = 'Folder created';
+  notification.hidden = false;
+  clearTimeout(notificationTimer);
+  notificationTimer = setTimeout(() => { notification.hidden = true; }, 5000);
+});
+
 htmx.on('htmx:before:request', (event) => {
   const path = new URL(event.detail.ctx.request.action, document.baseURI).pathname;
   if (path === '/sse' || path === '/shared/sse') return;
@@ -101,6 +111,9 @@ htmx.on('htmx:error', (event) => {
 document.addEventListener('click', (event) => {
   if (event.target.closest('#request-error button')) {
     document.getElementById('request-error').hidden = true;
+  }
+  if (event.target.closest('#notification button')) {
+    document.getElementById('notification').hidden = true;
   }
 });
 

@@ -306,6 +306,10 @@ pub(crate) fn layout(
                     span #request-error-text {}
                     button type="button" aria-label="Dismiss error" { "×" }
                 }
+                div #notification class="alert success" role="status" hidden {
+                    span #notification-text {}
+                    button type="button" aria-label="Dismiss notification" { "×" }
+                }
                 main #container.container-fluid x-data="{ search_q: new URLSearchParams(location.search).get('q') }" {
                     form #search hx-get=(access_base_url("/search", access)) hx-push-url="true" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" {
                         input type="search" x-model="search_q" name="q" placeholder="Search...";
@@ -348,6 +352,18 @@ fn page_actions(view: &View, access: &Access, out_of_band: bool) -> Markup {
                         }
                         @if matches!(access, Access::Admin) && matches!(view, View::File(_) | View::Dir(_)) {
                             li {
+                                @let parent = match view {
+                                    View::Dir(path) => path.as_path(),
+                                    View::File(path) => path.parent().unwrap_or(path),
+                                    _ => unreachable!(),
+                                };
+                                @let link = format!("/new-folder?{}", urlencode(&[("parent", &parent.to_string_lossy())]));
+                                a.new-folder x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
+                                    i {}
+                                    "New folder"
+                                }
+                            }
+                            li {
                                 @let link = format!("/share?{}", urlencode(&[("path", view.path())]));
                                 a.share x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
                                     i {}
@@ -364,6 +380,9 @@ fn page_actions(view: &View, access: &Access, out_of_band: bool) -> Markup {
                             }
                         }
                         @if matches!(access, Access::Admin) {
+                            @if !matches!(view, View::Search(_)) {
+                                li.menu-divider role="separator" {}
+                            }
                             li {
                                 a.logout x-on:click="$refs.dropdown.open = false" href="/logout" hx-delete="/logout" hx-target="#container" {
                                     i {}
@@ -372,6 +391,29 @@ fn page_actions(view: &View, access: &Access, out_of_band: bool) -> Markup {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn new_folder_modal(parent: &Path) -> Markup {
+    html! {
+        dialog open x-ref="modal" x-data="{ folderName: '' }" {
+            article "@click.outside"="$refs.modal.close()" {
+                header {
+                    span { "New folder" }
+                    button aria-label="Close" rel="prev" x-on:click="$refs.modal.close()" {}
+                }
+                form #new-folder-form action="/new-folder" hx-post="/new-folder" hx-target="#modal" {
+                    input type="hidden" name="parent" x-ref="parent" value=(parent.to_string_lossy());
+                    label for="new-folder-name" { "Folder name or path" }
+                    input #new-folder-name type="text" name="name" x-model="folderName" placeholder="path/to/new/folder" autofocus aria-describedby="new-folder-path new-folder-error";
+                    small x-text="($refs.parent.value.endsWith('/') ? $refs.parent.value : $refs.parent.value + '/') + folderName" { (parent.to_string_lossy()) "/" }
+                    div #new-folder-error role="alert" {}
+                }
+                footer {
+                    button form="new-folder-form" { "Create folder" }
                 }
             }
         }
@@ -1222,11 +1264,14 @@ mod page_action_tests {
         assert!(root.contains("View shared links"));
         assert!(!root.contains("hx-swap-oob"));
         assert!(!root.contains(">Download<"));
+        assert!(!root.contains("New folder"));
         assert!(root.find("View shared links").unwrap() < root.find("Logout").unwrap());
 
         let directory =
             page_actions(&View::Dir(PathBuf::from("/source")), &Access::Admin, false).into_string();
         assert!(!directory.contains("View shared links"));
+        assert!(directory.contains("New folder"));
+        assert!(directory.contains("hx-get=\"/new-folder?parent=%2Fsource\""));
         assert!(directory.find(">Share<").unwrap() < directory.find(">Download<").unwrap());
         assert!(directory.find(">Download<").unwrap() < directory.find(">Logout<").unwrap());
 
@@ -1234,6 +1279,7 @@ mod page_action_tests {
             page_actions(&View::Search("example".into()), &Access::Admin, false).into_string();
         assert!(!search.contains("View shared links"));
         assert!(!search.contains(">Download<"));
+        assert!(!search.contains("New folder"));
         assert!(search.contains(">Logout<"));
 
         let shared = Access::Shared(SharedAccess {
@@ -1243,12 +1289,21 @@ mod page_action_tests {
         let shared_directory =
             page_actions(&View::Dir(PathBuf::from("/source")), &shared, false).into_string();
         assert!(!shared_directory.contains(">Share<"));
+        assert!(!shared_directory.contains("New folder"));
         assert!(shared_directory.contains(">Download<"));
         assert!(!shared_directory.contains(">Logout<"));
 
         let shared_search =
             page_actions(&View::Search("example".into()), &shared, false).into_string();
         assert!(!shared_search.contains("<details"));
+
+        let file = page_actions(
+            &View::File(PathBuf::from("/source/photo.jpg")),
+            &Access::Admin,
+            false,
+        )
+        .into_string();
+        assert!(file.contains("hx-get=\"/new-folder?parent=%2Fsource\""));
     }
 
     #[test]

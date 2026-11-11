@@ -290,6 +290,9 @@ body > main {
       top: auto;
       left: auto;
       margin-top: 0;
+      box-shadow:
+        var(--pico-dropdown-box-shadow),
+        -3rem -3rem 10rem 2rem var(--pico-background-color);
     }
 
     i {
@@ -320,16 +323,13 @@ body > main {
       height: 3rem;
       padding: .5rem;
       border-radius: 50%;
-      background: var(--pico-primary);
+      background: var(--pico-primary-background);
       box-shadow: 0 0 8px var(--pico-primary);
       cursor: pointer;
       &:after { display: none }
-      &:before {
-        backdrop-filter: blur(69px);
-        opacity: .3;
-      }
 
       i {
+        background-color: var(--pico-primary-inverse);
         mask-image: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16"><path d="M3 9.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3m5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3m5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3"/></svg>');
       }
     }
@@ -537,7 +537,7 @@ body > main {
       td.icon i {
         width: 18px;
         height: 18px;
-        background-color: var(--pico-primary);
+        background-color: var(--pico-primary-background);
         mask-image: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16"><path d="M9.828 3h3.982a2 2 0 0 1 1.992 2.181l-.637 7A2 2 0 0 1 13.174 14H2.825a2 2 0 0 1-1.991-1.819l-.637-7a2 2 0 0 1 .342-1.31L.5 3a2 2 0 0 1 2-2h3.672a2 2 0 0 1 1.414.586l.828.828A2 2 0 0 0 9.828 3m-8.322.12q.322-.119.684-.12h5.396l-.707-.707A1 1 0 0 0 6.172 2H2.5a1 1 0 0 0-1 .981z"/></svg>');
       }
     }
@@ -676,7 +676,7 @@ body > main {
 
         &:hover {
           color: var(--pico-primary-inverse);
-          background-color: var(--pico-primary);
+          background-color: var(--pico-primary-background);
         }
       }
 
@@ -742,7 +742,7 @@ body > main {
       svg {
         width: 4rem;
         height: 4rem;
-        color: var(--pico-primary);
+        color: var(--pico-primary-background);
       }
 
       span {

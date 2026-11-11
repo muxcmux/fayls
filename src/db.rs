@@ -7,7 +7,8 @@ use std::{
 
 use serde::Deserialize;
 use sqlx::{
-    AssertSqlSafe, Database, Decode, Encode, Executor, FromRow, IntoArguments, Sqlite, Type,
+    AssertSqlSafe, Database, Decode, Encode, Executor, FromRow, IntoArguments, Sqlite,
+    SqliteConnection, Type,
     query::QueryAs,
     sqlite::{SqliteArgumentsBuffer, SqliteTypeInfo, SqliteValueRef},
 };
@@ -170,14 +171,15 @@ impl NewPathRecord {
         .await
     }
 
-    pub(crate) async fn insert<'e, E>(self, db: E) -> Result<ExistingPathRecord, sqlx::Error>
-    where
-        E: Executor<'e, Database = Sqlite>,
-    {
-        sqlx::query_as::<_, ExistingPathRecord>(
+    pub(crate) async fn insert_or_get(
+        &self,
+        db: &mut SqliteConnection,
+    ) -> Result<(ExistingPathRecord, bool), sqlx::Error> {
+        let inserted = sqlx::query_as::<_, ExistingPathRecord>(
             r"
             INSERT INTO paths (name, parent, kind, size, last_modified)
             VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (parent, name) DO NOTHING
             RETURNING *
             ",
         )
@@ -186,8 +188,17 @@ impl NewPathRecord {
         .bind(&self.kind)
         .bind(self.size)
         .bind(self.last_modified)
-        .fetch_one(db)
-        .await
+        .fetch_optional(&mut *db)
+        .await?;
+
+        match inserted {
+            Some(record) => Ok((record, true)),
+            None => self
+                .find_existing(&mut *db)
+                .await?
+                .map(|record| (record, false))
+                .ok_or(sqlx::Error::RowNotFound),
+        }
     }
 }
 
@@ -582,5 +593,45 @@ impl NewShareRecord {
         }
 
         anyhow::bail!("can't assign a unique id to share record");
+    }
+}
+
+#[cfg(test)]
+mod path_insert_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn duplicate_path_insert_returns_existing_row() -> Result<(), sqlx::Error> {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await?;
+        sqlx::query(
+            "CREATE TABLE paths (\
+                id INTEGER PRIMARY KEY, name TEXT NOT NULL, parent TEXT, \
+                kind TEXT NOT NULL, size INTEGER NOT NULL, \
+                last_modified INTEGER, processed INTEGER NOT NULL DEFAULT 0, \
+                UNIQUE(parent, name))",
+        )
+        .execute(&pool)
+        .await?;
+
+        let new = NewPathRecord {
+            name: "two".into(),
+            parent: Some("/source/hello-world/one".into()),
+            kind: PathRecordKind::Directory,
+            size: 0,
+            last_modified: None,
+        };
+        let mut txn = pool.begin().await?;
+        let (first, inserted) = new.insert_or_get(&mut *txn).await?;
+        assert!(inserted);
+        let (second, inserted) = new.insert_or_get(&mut *txn).await?;
+        assert!(!inserted);
+        assert_eq!(first.id, second.id);
+        txn.commit().await?;
+
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM paths")
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(count, 1);
+        Ok(())
     }
 }

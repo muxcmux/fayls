@@ -190,7 +190,12 @@ async fn index(
     let mut txn = app::db().begin().await?;
 
     for new in to_insert {
-        let existing = new.insert(&mut *txn).await?;
+        let (mut existing, inserted) = new.insert_or_get(&mut *txn).await?;
+        if !inserted {
+            existing
+                .touch(new.size, new.last_modified, &mut *txn)
+                .await?;
+        }
         let path = existing.path_buf();
         web::reload(Page::from(&path));
         if config::get().app.canonicalized_sources().contains(&path) {

@@ -5,6 +5,7 @@ pub(crate) mod error;
 pub(crate) mod fswatch;
 pub(crate) mod indexing;
 pub(crate) mod jobs;
+pub(crate) mod upload;
 pub(crate) mod web;
 
 use std::path::{Path, PathBuf};
@@ -56,7 +57,7 @@ fn validate_folder_name(name: &str) -> Result<Vec<&str>, &'static str> {
     Ok(segments)
 }
 
-async fn validate_folder_parent(parent: &Path) -> Result<PathBuf, &'static str> {
+pub(crate) async fn validate_folder_parent(parent: &Path) -> Result<PathBuf, &'static str> {
     if !parent.is_absolute() {
         return Err("Choose a valid parent folder");
     }

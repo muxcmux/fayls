@@ -293,6 +293,7 @@ pub(crate) fn layout(
                 script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/htmx.min.js" {}
                 script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/ext/hx-sse.min.js" {}
                 script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js" {}
+                script src="https://cdn.jsdelivr.net/npm/dropzone@5.9.3/dist/min/dropzone.min.js" {}
                 script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" {}
                 script src="/static/app.js" {}
 
@@ -364,6 +365,13 @@ fn page_actions(view: &View, access: &Access, out_of_band: bool) -> Markup {
                                 }
                             }
                             li {
+                                @let link = format!("/upload?{}", urlencode(&[("parent", &parent.to_string_lossy())]));
+                                a.upload x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
+                                    i {}
+                                    "Upload files"
+                                }
+                            }
+                            li {
                                 @let link = format!("/share?{}", urlencode(&[("path", view.path())]));
                                 a.share x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
                                     i {}
@@ -414,6 +422,40 @@ pub(crate) fn new_folder_modal(parent: &Path) -> Markup {
                 }
                 footer {
                     button form="new-folder-form" { "Create folder" }
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn upload_modal(parent: &Path) -> Markup {
+    html! {
+        dialog #upload-modal open x-ref="modal" x-data="uploadFiles()" {
+            article "@click.outside"="$refs.modal.close()" {
+                header {
+                    span { "Upload files" }
+                    button aria-label="Close" rel="prev" x-on:click="$refs.modal.close()" {}
+                }
+                input type="hidden" x-ref="parent" value=(parent.to_string_lossy());
+                div.outline.secondary #upload-dropzone x-ref="dropzone" role="button" tabindex="0" aria-label="Choose files to upload"
+                    data-max-size=(config::get().app.max_upload_file_size)
+                    data-chunk-size=(crate::upload::CHUNK_SIZE)
+                    "@keydown.enter.prevent"="$refs.dropzone.click()"
+                    "@keydown.space.prevent"="$refs.dropzone.click()" {
+                    "Drop files here or click to choose files"
+                }
+                small { "Destination: " (parent.to_string_lossy()) }
+                div #upload-list aria-live="polite" {
+                    template x-for="item in uploads" ":key"="item.id" {
+                        div .upload-item {
+                            div .upload-item-label {
+                                span x-text="item.name" {}
+                                span x-text="item.status === 'Uploading' ? Math.round(item.progress) + '%' : item.status" {}
+                            }
+                            progress max="100" ":value"="item.progress" ":aria-label"="item.name + ' upload progress'" {}
+                            small x-show="item.message" x-text="item.message" role="alert" {}
+                        }
+                    }
                 }
             }
         }
@@ -1265,13 +1307,16 @@ mod page_action_tests {
         assert!(!root.contains("hx-swap-oob"));
         assert!(!root.contains(">Download<"));
         assert!(!root.contains("New folder"));
+        assert!(!root.contains("Upload files"));
         assert!(root.find("View shared links").unwrap() < root.find("Logout").unwrap());
 
         let directory =
             page_actions(&View::Dir(PathBuf::from("/source")), &Access::Admin, false).into_string();
         assert!(!directory.contains("View shared links"));
         assert!(directory.contains("New folder"));
+        assert!(directory.contains("Upload files"));
         assert!(directory.contains("hx-get=\"/new-folder?parent=%2Fsource\""));
+        assert!(directory.contains("hx-get=\"/upload?parent=%2Fsource\""));
         assert!(directory.find(">Share<").unwrap() < directory.find(">Download<").unwrap());
         assert!(directory.find(">Download<").unwrap() < directory.find(">Logout<").unwrap());
 
@@ -1280,6 +1325,7 @@ mod page_action_tests {
         assert!(!search.contains("View shared links"));
         assert!(!search.contains(">Download<"));
         assert!(!search.contains("New folder"));
+        assert!(!search.contains("Upload files"));
         assert!(search.contains(">Logout<"));
 
         let shared = Access::Shared(SharedAccess {
@@ -1290,6 +1336,7 @@ mod page_action_tests {
             page_actions(&View::Dir(PathBuf::from("/source")), &shared, false).into_string();
         assert!(!shared_directory.contains(">Share<"));
         assert!(!shared_directory.contains("New folder"));
+        assert!(!shared_directory.contains("Upload files"));
         assert!(shared_directory.contains(">Download<"));
         assert!(!shared_directory.contains(">Logout<"));
 
@@ -1304,6 +1351,7 @@ mod page_action_tests {
         )
         .into_string();
         assert!(file.contains("hx-get=\"/new-folder?parent=%2Fsource\""));
+        assert!(file.contains("hx-get=\"/upload?parent=%2Fsource\""));
     }
 
     #[test]

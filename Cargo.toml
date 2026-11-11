@@ -7,7 +7,7 @@ default-run = "fayls"
 
 [dependencies]
 rand = "0.10"
-tokio = { version = "1", features = ["macros", "signal", "fs", "process", "time"] }
+tokio = { version = "1", features = ["macros", "signal", "fs", "process", "time", "io-util"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio-stream = "0.1"
 tracing = "0.1"

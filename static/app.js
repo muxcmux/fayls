@@ -145,6 +145,64 @@ function hls(el, src) {
   }
 }
 
+Dropzone.autoDiscover = false;
+
+function uploadFiles() {
+  return {
+    uploads: [],
+    nextId: 0,
+    init() {
+      const target = this.$refs.dropzone;
+      this.dropzone = new Dropzone(target, {
+        url: '/upload',
+        method: 'post',
+        params: () => ({ parent: this.$refs.parent.value }),
+        maxFilesize: Number(target.dataset.maxSize) / (1024 * 1024),
+        chunkSize: Number(target.dataset.chunkSize),
+        chunking: true,
+        forceChunking: false,
+        parallelChunkUploads: false,
+        retryChunks: true,
+        retryChunksLimit: 5,
+        parallelUploads: 2,
+        createImageThumbnails: false,
+        disablePreviews: true,
+        hiddenInputContainer: target,
+      });
+
+      const itemFor = (file) => this.uploads.find((item) => item.id === file.uploadItemId);
+      this.dropzone.on('addedfile', (file) => {
+        file.uploadItemId = ++this.nextId;
+        this.uploads.push({ id: file.uploadItemId, name: file.name, progress: 0, status: 'Queued', message: '' });
+      });
+      this.dropzone.on('uploadprogress', (file, progress) => {
+        const item = itemFor(file);
+        if (item) {
+          item.progress = progress;
+          item.status = 'Uploading';
+        }
+      });
+      this.dropzone.on('success', (file) => {
+        const item = itemFor(file);
+        if (item) {
+          item.progress = 100;
+          item.status = 'Complete';
+        }
+      });
+      this.dropzone.on('error', (file, message) => {
+        const item = itemFor(file);
+        if (item) {
+          item.status = 'Failed';
+          item.message = typeof message === 'string' ? message : 'Upload failed';
+        }
+      });
+    },
+    destroy() {
+      this.dropzone?.destroy();
+    },
+  };
+}
+
 let fontPreviewSequence = 0;
 
 async function loadFontPreview(url, signal) {

@@ -6,6 +6,7 @@ app:
   theme: pico
   # stores cookie secret, admin auth (encrypted), etc.
   cache_dir: data
+  max_upload_file_size: 104857600 # 100 MiB, in bytes
   # By default shared links will point to the domain fayls runs on. Change this if you want to
   # have shared links generated to a different domain. Shared links always start with the /shared
   # path, so if your fayls instance runs behind a private domain, and you have a public domain

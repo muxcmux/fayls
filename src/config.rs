@@ -74,6 +74,7 @@ pub struct App {
     pub theme: String,
     pub cache_dir: PathBuf,
     pub share_url: Option<String>,
+    pub max_upload_file_size: u64,
 }
 
 #[derive(Clone, Debug, Deserialize)]

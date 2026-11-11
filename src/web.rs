@@ -20,6 +20,7 @@ use crate::{
     db::{ExistingPathRecord, ExistingShareRecord, NewShareRecord},
     error::{AppResult, Error},
     jobs::JobRunner,
+    upload,
     web::views::Page,
 };
 use salvo::{
@@ -492,6 +493,19 @@ async fn new_folder_handler(req: &mut Request, res: &mut Response) -> AppResult 
 }
 
 #[handler]
+async fn upload_handler(req: &mut Request, res: &mut Response) -> AppResult {
+    if req.method() == salvo::http::Method::GET {
+        upload::cleanup_stale().await;
+        let parent = req.query::<PathBuf>("parent").unwrap_or_default();
+        res.render(Text::Html(views::upload_modal(&parent).into_string()));
+        return Ok(());
+    }
+
+    upload::receive(req, res).await;
+    Ok(())
+}
+
+#[handler]
 async fn create_share_handler(req: &mut Request, res: &mut Response) -> AppResult {
     match req.parse_form::<NewShareRecord>().await {
         Ok(new_record) => match new_record.save().await {
@@ -750,6 +764,11 @@ fn admin_routes() -> Router {
             Router::with_path("new-folder")
                 .get(new_folder_handler)
                 .post(new_folder_handler),
+        )
+        .push(
+            Router::with_path("upload")
+                .get(upload_handler)
+                .post(upload_handler),
         )
         .push(
             Router::with_path("share")

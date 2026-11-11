@@ -28,6 +28,10 @@ directory index (mod_dir), but with search and sharing functionality.
     - shared link base domain configurable
     - shared views get the same functionality: (listing, downloading, previewing, searching), only
     scoped to the shared path
+- Mutating files:
+    - create dirs and subdirs
+    - upload files
+    - (more fs operations coming)
 
 ## Run with Docker
 

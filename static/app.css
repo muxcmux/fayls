@@ -13,6 +13,10 @@
 }
 
 @media (max-width: 640px) {
+  :root {
+    --pico-font-size: 16px;
+  }
+
   #view {
     table, footer {
       margin-left: -1rem;

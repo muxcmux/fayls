@@ -73,6 +73,7 @@ htmx.on('folder-created', () => {
 htmx.on('htmx:before:request', (event) => {
   const path = new URL(event.detail.ctx.request.action, document.baseURI).pathname;
   if (path === '/sse' || path === '/shared/sse') return;
+  if (event.detail.ctx.sourceEvent?.type === 'reload-view') return;
 
   const wasIdle = activeRequests.size === 0;
   activeRequests.add(event.detail.ctx);

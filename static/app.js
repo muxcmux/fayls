@@ -157,7 +157,6 @@ function uploadFiles() {
       this.dropzone = new Dropzone(target, {
         url: '/upload',
         method: 'post',
-        params: () => ({ parent: this.$refs.parent.value }),
         maxFilesize: Number(target.dataset.maxSize) / (1024 * 1024),
         chunkSize: Number(target.dataset.chunkSize),
         chunking: true,
@@ -172,6 +171,9 @@ function uploadFiles() {
       });
 
       const itemFor = (file) => this.uploads.find((item) => item.id === file.uploadItemId);
+      this.dropzone.on('sending', (_file, _xhr, formData) => {
+        formData.append('parent', this.$refs.parent.value);
+      });
       this.dropzone.on('addedfile', (file) => {
         file.uploadItemId = ++this.nextId;
         this.uploads.push({ id: file.uploadItemId, name: file.name, progress: 0, status: 'Queued', message: '' });

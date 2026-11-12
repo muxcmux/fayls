@@ -455,6 +455,8 @@ pub(crate) fn upload_modal(parent: &Path) -> Markup {
                             div .upload-item-label {
                                 span x-text="item.name" {}
                                 span x-text="item.status === 'Uploading' ? Math.round(item.progress) + '%' : item.status" {}
+                                a href="#" .outline .secondary x-show="item.status === 'Failed' && item.retryable" x-cloak data-tooltip="Retry"
+                                    "@click.prevent"="retry(item.id)" ":aria-label"="'Retry uploading ' + item.name" { i.retry {} }
                             }
                             progress max="100" ":value"="item.progress" ":aria-label"="item.name + ' upload progress'" {}
                             small x-show="item.message" x-text="item.message" role="alert" {}

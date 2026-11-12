@@ -176,7 +176,7 @@ function uploadFiles() {
       });
       this.dropzone.on('addedfile', (file) => {
         file.uploadItemId = ++this.nextId;
-        this.uploads.push({ id: file.uploadItemId, name: file.name, progress: 0, status: 'Queued', message: '' });
+        this.uploads.push({ id: file.uploadItemId, name: file.name, progress: 0, status: 'Queued', message: '', retryable: false });
       });
       this.dropzone.on('uploadprogress', (file, progress) => {
         const item = itemFor(file);
@@ -197,8 +197,35 @@ function uploadFiles() {
         if (item) {
           item.status = 'Failed';
           item.message = typeof message === 'string' ? message : 'Upload failed';
+          item.retryable = file.accepted === true;
         }
       });
+    },
+    retry(id) {
+      const file = this.dropzone.files.find((candidate) => candidate.uploadItemId === id);
+      if (!file || file.status !== Dropzone.ERROR || !file.accepted) return;
+      const chunk = file.upload.chunked
+        ? file.upload.chunks.find((candidate) => candidate?.dataBlock && candidate.status !== Dropzone.SUCCESS)
+        : null;
+      if (file.upload.chunked && !chunk) return;
+
+      const item = this.uploads.find((candidate) => candidate.id === id);
+      item.status = 'Uploading';
+      item.message = '';
+      item.retryable = false;
+
+      if (file.upload.chunked) {
+        chunk.retries = 0;
+        chunk.progress = 0;
+        chunk.bytesSent = 0;
+        item.progress = 100 * file.upload.chunks.filter((candidate) => candidate?.status === Dropzone.SUCCESS).length / file.upload.totalChunkCount;
+        file.status = Dropzone.UPLOADING;
+        // Dropzone 5.9.3 retains successful chunks; resend only the failed data block.
+        this.dropzone._uploadData([file], [chunk.dataBlock]);
+      } else {
+        item.progress = 0;
+        this.dropzone.processFile(file);
+      }
     },
     destroy() {
       this.dropzone?.destroy();

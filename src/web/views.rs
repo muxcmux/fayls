@@ -339,7 +339,7 @@ pub(crate) fn layout(
                     span #notification-text {}
                     button type="button" aria-label="Dismiss notification" { "×" }
                 }
-                main #container.container-fluid x-data="{ search_q: new URLSearchParams(location.search).get('q') }" {
+                main #container.container-fluid x-data="{ search_q: new URLSearchParams(location.search).get('q'), multiselecting: false }" {
                     form #search hx-get=(access_base_url("/search", access)) hx-push-url="true" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" {
                         input type="search" x-model="search_q" name="q" placeholder="Search...";
                     }
@@ -349,7 +349,6 @@ pub(crate) fn layout(
                             script { (PreEscaped("setTimeout(() => { htmx.process(document.body) }, 10)")) }
                         }
                     }
-                    div #context-menu {}
                 }
                 div #modal {}
             }
@@ -369,17 +368,28 @@ pub(crate) fn path_context_menu(
     html! {
         div.open #context-menu "@click"="$refs.menu.classList.remove('open'); contextMenuClose(event)" x-ref="menu" {
             ul.ui-menu {
-                @if has_selected {
-                    li.heading.multiselect {
-                        i {}
-                        span {
-                            "with "
-                                (selected.len())
-                                " selected"
+                @if !empty {
+                    @if has_selected {
+                        li {
+                            a.deselect-multiple href="#"
+                                "@click.prevent"="multiselecting = !multiselecting; checked.clear(); lastToggledCheckbox = null" {
+                                i {}
+                                span {
+                                    "Cancel selection ("
+                                    (selected.len())
+                                    ")"
+                                }
+                            }
+                        }
+                    } @else {
+                        li {
+                            a ":class"="multiselecting ? 'deselect-multiple' : 'select-multiple'" href="#"
+                                "@click.prevent"="multiselecting = !multiselecting; checked.clear(); lastToggledCheckbox = null" {
+                                i {}
+                                span x-text="multiselecting ? 'Cancel selection' : 'Select multiple'" {}
+                            }
                         }
                     }
-                }
-                @if !empty {
                     li {
                         @let link = download_url(path_str.as_ref(), selected.keys(), access);
                         a.download href=(link) {
@@ -1005,20 +1015,51 @@ fn file_list(
             (breadcrumbs(view, &query_string, access))
             (page_actions(view, access))
         }
-        div.paths x-data="{ checked: new Set() }" {
+        div.paths x-data="{
+            checked: new Set(),
+            lastToggledCheckbox: null,
+            setRange(current, on) {
+                const checkboxes = Array.from($refs.tbody.querySelectorAll('tr .check input[type=checkbox]'))
+                const previous = checkboxes.indexOf(this.lastToggledCheckbox)
+                const next = checkboxes.indexOf(current)
+                if (previous === -1 || next === -1) return
+
+                checkboxes.slice(Math.min(previous, next), Math.max(previous, next) + 1)
+                    .filter(checkbox => checkbox !== current && checkbox.checked !== on)
+                    .forEach(checkbox => checkbox.click())
+            }
+        }" {
+            div #context-menu {}
             table.striped hx-get={ (files_url(view.path(), access)) (&query_string) }
-            hx-trigger="reload-view" hx-target="#view" {
+                ":class"="multiselecting ? 'multiselecting' : ''"
+                hx-trigger="reload-view" hx-target="#view" {
                 thead hx-sse:connect={ (sse_url(view.path(), access)) } hx-trigger="load delay:1s"
                     hx-config="ws.pauseOnBackground: false" {
-                        tr {
-                            th.check { }
-                            @let (sort, order) = get_sorting(req);
-                            (file_list_header(&Sort::Name, &sort, &order, req))
-                                (file_list_header(&Sort::Size, &sort, &order, req))
-                                (file_list_header(&Sort::LastModified, &sort, &order, req))
+                        @if !files.is_empty() {
+                            tr x-data="{
+                                toggle(on) {
+                                    lastToggledCheckbox = null
+                                    if (on) {
+                                        $refs.tbody.querySelectorAll('input[type=checkbox]').forEach(c => {
+                                            c.checked = true
+                                            c.dispatchEvent(new Event('change', { bubbles: true }))
+                                        })
+                                    } else {
+                                        checked.clear()
+                                    }
+                                }
+                            }" {
+                                th.check {
+                                    input type="checkbox" "@click.stop"="" "@change"="toggle(event.currentTarget.checked)" {}
+                                }
+                                @let (sort, order) = get_sorting(req);
+                                (file_list_header(&Sort::Name, &sort, &order, req))
+                                    (file_list_header(&Sort::Size, &sort, &order, req))
+                                    (file_list_header(&Sort::LastModified, &sort, &order, req))
+                            }
                         }
                     }
-                tbody {
+                tbody x-ref="tbody" {
                     @if files.is_empty() {
                         tr.empty {
                             @match view {
@@ -1042,29 +1083,31 @@ fn file_list(
                         }
                     }
                 }
-                tfoot {
-                    tr {
-                        td colspan="10" {
-                            span.wrap {
-                                span.stats {
-                                    (total_dirs)
-                                        @if total_dirs == 1 {
-                                            " folder, "
-                                        } @else {
-                                            " folders, "
-                                        }
-                                    (total_files)
-                                        @if total_files == 1 {
-                                            " file, "
-                                        } @else {
-                                            " files, "
-                                        }
-                                    (format_size(total_size)) " total "
-                                }
+                @if !files.is_empty() {
+                    tfoot {
+                        tr {
+                            td colspan="10" {
+                                span.wrap {
+                                    span.stats {
+                                        (total_dirs)
+                                            @if total_dirs == 1 {
+                                                " folder, "
+                                            } @else {
+                                                " folders, "
+                                            }
+                                        (total_files)
+                                            @if total_files == 1 {
+                                                " file, "
+                                            } @else {
+                                                " files, "
+                                            }
+                                        (format_size(total_size)) " total "
+                                    }
 
-                                @if matches!(access, Access::Admin) {
-                                    span #index-progress {
-                                        (index_progress(progress))
+                                    @if matches!(access, Access::Admin) {
+                                        span #index-progress {
+                                            (index_progress(progress))
+                                        }
                                     }
                                 }
                             }
@@ -1083,21 +1126,20 @@ fn row_cell(
     class: &str,
     contents: Markup,
 ) -> Markup {
-    let check_fix = if class == "check" {
-        Some(
-            "$refs.cb.checked = !$refs.cb.checked; $refs.cb.dispatchEvent(new Event('change', { bubbles: true }))",
-        )
-    } else {
-        None
-    };
     html! {
-        td .(class) "@click.stop"=[check_fix]
+        td .(class)
             hx-get=(contextmenu_url)
             hx-trigger="contextmenu"
             hx-target="#context-menu"
             hx-swap="outerHTML"
             hx-include={"#r" (record.id) " .selected-path"}
             "@contextmenu"="rowContextMenu(event)"
+            "@click"="if (multiselecting) {
+                event.stopPropagation();
+                const checkbox = $el.closest('tr').querySelector('.check input[type=checkbox]');
+                if (event.shiftKey) setRange(checkbox, !checkbox.checked);
+                checkbox.click();
+            }"
             hx-on::after:swap="repositionContextMenu(event)" {
                 (contents)
             }
@@ -1124,21 +1166,20 @@ fn row(
             hx-push-url="true"
             x-data={
                 "{
-                    on: false,
                     id: " (record.id) ",
-                    toggle(o) {
-                        this.on = o;
-                        o ? checked.add(this.id) : checked.delete(this.id)
+                    toggle(on) {
+                        on ? checked.add(this.id) : checked.delete(this.id)
                     }
                 }"
             }
-            x-bind:class="on ? 'checked' : ''" {
+            x-bind:class="checked.has(id) ? 'checked' : ''" {
             template x-for="path in checked" {
                 input.selected-path name="id" type="hidden" x-model="path";
             }
 
             (row_cell(record, &contextmenu_url, "check", html! {
-                input type="checkbox" "@click.stop"="" x-ref="cb" "@change"="toggle($el.checked)" {}
+                input type="checkbox" "@click.stop"="if (event.shiftKey) setRange($el, $el.checked); lastToggledCheckbox = $el"
+                    ":checked"="checked.has(id)" "@change"="toggle($el.checked)" {}
             }))
 
             (row_cell(record, &contextmenu_url, "name", html! {

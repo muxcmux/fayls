@@ -358,13 +358,14 @@ pub(crate) fn layout(
 }
 
 pub(crate) fn path_context_menu(
-    path: &AuthorizedPath,
+    target: &AuthorizedPath,
     search: bool,
+    empty: bool,
     access: &Access,
     selected: &HashMap<i64, AuthorizedPath>,
 ) -> Markup {
     let has_selected = !selected.is_empty();
-    let path_str = path.as_ref().to_string_lossy();
+    let path_str = target.as_ref().to_string_lossy();
     html! {
         div.open #context-menu "@click"="$refs.menu.classList.remove('open'); contextMenuClose(event)" x-ref="menu" {
             ul.ui-menu {
@@ -378,15 +379,17 @@ pub(crate) fn path_context_menu(
                         }
                     }
                 }
-                li {
-                    @let link = download_url(path_str.as_ref(), selected.keys(), access);
-                    a.download href=(link) {
-                        i {}
-                        "Download"
+                @if !empty {
+                    li {
+                        @let link = download_url(path_str.as_ref(), selected.keys(), access);
+                        a.download href=(link) {
+                            i {}
+                            "Download"
+                        }
                     }
                 }
                 @if matches!(access, Access::Admin) {
-                    @if !has_selected && !search {
+                    @if !has_selected && !search && !empty {
                         li {
                             @let link = format!("/rename?{}", urlencode(&[("path", path_str.as_ref())]));
                             a.rename href=(link) hx-get=(link) hx-target="#modal" {
@@ -403,7 +406,11 @@ pub(crate) fn path_context_menu(
                                 "Share"
                             }
                         }
-                        @let parent = path.as_ref().parent().unwrap_or(path.as_ref());
+                        @let parent = if empty {
+                            target.as_ref()
+                        } else {
+                            target.as_ref().parent().unwrap_or(target.as_ref())
+                        };
                         @if !search {
                             li.menu-divider role="separator" {}
                             li {
@@ -422,12 +429,14 @@ pub(crate) fn path_context_menu(
                             }
                         }
                     }
-                    li.menu-divider role="separator" {}
-                    li {
-                        @let link = unlink_url(path_str.as_ref(), selected.keys());
-                        a.delete href=(link) hx-get=(link) hx-target="#modal" {
-                            i {}
-                            "Delete"
+                    @if !empty {
+                        li.menu-divider role="separator" {}
+                        li {
+                            @let link = unlink_url(path_str.as_ref(), selected.keys());
+                            a.delete href=(link) hx-get=(link) hx-target="#modal" {
+                                i {}
+                                "Delete"
+                            }
                         }
                     }
                 }
@@ -1012,7 +1021,19 @@ fn file_list(
                 tbody {
                     @if files.is_empty() {
                         tr.empty {
-                            td colspan="4" { "Empty" }
+                            @match view {
+                                View::Dir(path_buf) => {
+                                    td colspan="4" hx-get={(path_context_menu_url(path_buf.to_string_lossy().as_ref(), access)) "&empty=true"}
+                                        hx-trigger="contextmenu"
+                                        hx-target="#context-menu"
+                                        hx-swap="outerHTML"
+                                        "@contextmenu"="rowContextMenu(event)"
+                                        hx-on::after:swap="repositionContextMenu(event)" {
+                                            "Empty"
+                                    }
+                                },
+                                _ => td colspan="4" { "Nothing found" },
+                            }
                         }
                     } @else {
                         @for file in files {

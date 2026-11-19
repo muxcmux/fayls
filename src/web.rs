@@ -653,12 +653,13 @@ async fn path_context_menu_handler(
 ) -> AppResult {
     let path = req.query::<PathBuf>("path").ok_or(Error::NotFound)?;
     let search = req.query::<bool>("search").unwrap_or(false);
+    let empty = req.query::<bool>("empty").unwrap_or(false);
     let (access, authorized_path) = authorize_path(path, depot).await?;
 
     let multiple = paths_from_request_id_params(depot, req).await?;
 
     res.render(Text::Html(
-        views::path_context_menu(&authorized_path, search, &access, &multiple).into_string(),
+        views::path_context_menu(&authorized_path, search, empty, &access, &multiple).into_string(),
     ));
 
     Ok(())

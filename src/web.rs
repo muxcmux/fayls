@@ -14,7 +14,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::web::views::Message;
 use crate::{
     config, create_folder,
     db::{ExistingPathRecord, ExistingShareRecord, NewShareRecord},
@@ -23,6 +22,7 @@ use crate::{
     upload,
     web::views::Page,
 };
+use crate::{remove_path, rename_without_overwriting, web::views::Message};
 use salvo::{
     conn::tcp::TcpAcceptor,
     fs::NamedFile,
@@ -31,8 +31,8 @@ use salvo::{
 };
 use tokio::sync::mpsc::{self, UnboundedSender};
 
-// Scopes the path the the shared path, e.g. if the shared path is
-// /Documents/books, then a scoped /Documents/books/fiction, would
+// Scopes the path to the shared path, e.g. if the shared path is
+// /Documents/books, then a scoped /Documents/books/fiction would
 // return /books/fiction
 pub(crate) fn access_scoped_path(path: &str, access: &Access) -> String {
     match access {
@@ -168,7 +168,7 @@ async fn path_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> A
         .map(|p| format!("/{p}"))
         .expect("this can't happen");
 
-    let authorized_path = authorize_path(PathBuf::from(path), depot)?;
+    let (_, authorized_path) = authorize_path(PathBuf::from(path), depot).await?;
 
     if authorized_path.as_ref() != "/" {
         _ = ExistingPathRecord::find_by_path(authorized_path.as_ref())
@@ -200,15 +200,9 @@ async fn render_page(page: Page, req: &Request, res: &mut Response, access: &Acc
     let view = views::page(&page, req, access).await?;
     res.render(Text::Html(
         if is_hx(req) {
-            views::partial_page(&page, &view, access)
+            view
         } else {
-            views::layout(
-                "Fayls",
-                history_restore_requested(req),
-                &view,
-                &page,
-                access,
-            )
+            views::layout("Fayls", history_restore_requested(req), &view, access)
         }
         .into_string(),
     ));
@@ -222,7 +216,7 @@ async fn preview_handler(depot: &Depot, req: &mut Request, res: &mut Response) -
         .query::<PathBuf>("path")
         .ok_or(Error::BadRequest("no path param"))?;
 
-    let authorized_path = authorize_path(path, depot)?;
+    let (_, authorized_path) = authorize_path(path, depot).await?;
 
     _ = ExistingPathRecord::find_by_path(authorized_path.as_ref())
         .await?
@@ -274,32 +268,29 @@ async fn preview_spreadsheet_file(path: &AuthorizedPath, res: &mut Response) -> 
 
 #[handler]
 async fn download_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> AppResult {
-    let path = req
-        .query::<PathBuf>("path")
-        .ok_or(Error::BadRequest("no path param"))?;
+    let paths = paths_from_request_ids_or_path_param(depot, req).await?;
 
-    let authorized_path = authorize_path(path, depot)?;
+    if paths.len() == 1 {
+        let path = paths.values().next().unwrap();
+        if tokio::fs::metadata(path.as_ref())
+            .await
+            .map_err(|error| match error.kind() {
+                std::io::ErrorKind::NotFound => Error::NotFound,
+                _ => Error::Anyhow(error.into()),
+            })?
+            .is_dir()
+        {
+            archive::stream_directory(path.as_ref(), res)?;
+            return Ok(());
+        }
 
-    _ = ExistingPathRecord::find_by_path(authorized_path.as_ref())
-        .await?
-        .ok_or(Error::NotFound)?;
-
-    if tokio::fs::metadata(authorized_path.as_ref())
-        .await
-        .map_err(|error| match error.kind() {
-            std::io::ErrorKind::NotFound => Error::NotFound,
-            _ => Error::Anyhow(error.into()),
-        })?
-        .is_dir()
-    {
-        archive::stream_directory(authorized_path.as_ref(), res)?;
-        return Ok(());
+        NamedFile::builder(path.as_ref())
+            .disposition_type("attachment")
+            .send(req.headers(), res)
+            .await;
+    } else {
+        archive::stream_paths(paths.values(), res)?;
     }
-
-    NamedFile::builder(authorized_path.as_ref())
-        .disposition_type("attachment")
-        .send(req.headers(), res)
-        .await;
 
     Ok(())
 }
@@ -331,25 +322,103 @@ fn access(depot: &Depot) -> AppResult<Access> {
 // while shared requested_paths are rooted to the shared dir, e.g. if
 // the shared dir is /Documents/books, requests for paths will have
 // a root of /books
-fn authorize_path(requested_path: PathBuf, depot: &Depot) -> AppResult<AuthorizedPath> {
+async fn authorize_path(
+    requested_path: PathBuf,
+    depot: &Depot,
+) -> AppResult<(Access, AuthorizedPath)> {
     let access = access(depot)?;
 
     match &access {
-        Access::Admin => return Ok(AuthorizedPath(requested_path)),
+        Access::Admin => Ok((access, AuthorizedPath(requested_path))),
         Access::Shared(SharedAccess { path_buf, .. }) => {
             let real_path = requested_path
                 .components()
                 .filter(|c| !matches!(c, Component::RootDir | Component::Prefix(_)))
                 .collect::<PathBuf>();
+
+            // reject paths containing ../
+            if real_path
+                .components()
+                .any(|c| matches!(c, Component::ParentDir))
+            {
+                return Err(Error::Forbidden);
+            }
+
             let authorized_path =
                 AuthorizedPath(path_buf.parent().ok_or(Error::Forbidden)?.join(real_path));
-            if access.is_allowed(authorized_path.as_ref()) {
-                return Ok(authorized_path);
+
+            if !access.is_allowed(authorized_path.as_ref()) {
+                return Err(Error::Forbidden);
             }
+
+            // reject accidental symlink shares
+            let shared_root = tokio::fs::canonicalize(path_buf)
+                .await
+                .map_err(|_| Error::Forbidden)?;
+            let resolved_path = tokio::fs::canonicalize(authorized_path.as_ref())
+                .await
+                .map_err(|_| Error::Forbidden)?;
+
+            if !resolved_path.starts_with(&shared_root) {
+                return Err(Error::Forbidden);
+            }
+
+            Ok((access, authorized_path))
         }
     }
+}
 
-    Err(Error::Forbidden)
+async fn paths_from_ids(ids: &[i64], depot: &Depot) -> AppResult<HashMap<i64, AuthorizedPath>> {
+    let access = access(depot)?;
+    let mut authorized_paths = HashMap::new();
+    for record in ExistingPathRecord::find_many_by_id(&ids).await? {
+        let scoped_path = access_scoped_path(record.path_buf().to_string_lossy().as_ref(), &access);
+        let (_, authorized_path) = authorize_path(scoped_path.into(), depot).await?;
+        authorized_paths.insert(record.id, authorized_path);
+    }
+
+    Ok(authorized_paths)
+}
+
+async fn paths_from_request_id_params(
+    depot: &Depot,
+    req: &mut Request,
+) -> AppResult<HashMap<i64, AuthorizedPath>> {
+    let ids = match req.query::<Vec<i64>>("id") {
+        Some(p) => p,
+        None => match req.form::<Vec<i64>>("id").await {
+            Some(p) => p,
+            None => return Ok(HashMap::new()),
+        },
+    };
+
+    Ok(paths_from_ids(&ids, depot).await?)
+}
+
+// id query or form param takes precedence
+// fallsback to path param
+async fn paths_from_request_ids_or_path_param(
+    depot: &Depot,
+    req: &mut Request,
+) -> AppResult<HashMap<i64, AuthorizedPath>> {
+    match req
+        .query::<Vec<i64>>("id")
+        .or(req.form::<Vec<i64>>("id").await)
+    {
+        Some(ids) => paths_from_ids(&ids, depot).await,
+        None => {
+            let path = req
+                .query::<PathBuf>("path")
+                .ok_or(Error::BadRequest("no path param"))?;
+
+            let (_, authorized_path) = authorize_path(path, depot).await?;
+
+            let record = ExistingPathRecord::find_by_path(authorized_path.as_ref())
+                .await?
+                .ok_or(Error::NotFound)?;
+            Ok(HashMap::from([(record.id, authorized_path)]))
+        }
+    }
 }
 
 #[handler]
@@ -468,7 +537,7 @@ async fn open_share_modal(req: &mut Request, res: &mut Response) -> AppResult {
 }
 
 #[handler]
-async fn new_folder_handler(req: &mut Request, res: &mut Response) -> AppResult {
+async fn new_handler(req: &mut Request, res: &mut Response) -> AppResult {
     if req.method() == salvo::http::Method::GET {
         let parent = req.query::<PathBuf>("parent").unwrap_or_default();
         res.render(Text::Html(views::new_folder_modal(&parent).into_string()));
@@ -502,6 +571,96 @@ async fn upload_handler(req: &mut Request, res: &mut Response) -> AppResult {
     }
 
     upload::receive(req, res).await;
+    Ok(())
+}
+
+#[handler]
+async fn unlink_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> AppResult {
+    let paths = paths_from_request_ids_or_path_param(depot, req).await?;
+
+    if req.method() == salvo::http::Method::GET {
+        res.render(Text::Html(views::unlink_modal(&paths).into_string()));
+        return Ok(());
+    }
+
+    for path in paths.values() {
+        remove_path(path.as_ref())
+            .await
+            .map_err(|error| Error::Anyhow(error.into()))?;
+    }
+
+    _ = res.add_header("HX-Trigger", "path-deleted", true);
+    res.render(Text::Html(String::new()));
+    Ok(())
+}
+
+#[handler]
+async fn rename_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> AppResult {
+    let path = match req.query::<PathBuf>("path") {
+        Some(path) => path,
+        None => req.form::<PathBuf>("path").await.ok_or(Error::NotFound)?,
+    };
+    let (_, path) = authorize_path(path, depot).await?;
+
+    if req.method() == salvo::http::Method::GET {
+        res.render(Text::Html(views::rename_modal(&path).into_string()));
+        return Ok(());
+    }
+
+    let new_name = req.form::<String>("name").await.ok_or(Error::NotFound)?;
+    if Path::new(&new_name)
+        .file_name()
+        .is_none_or(|name| name != new_name.as_str())
+    {
+        res.status_code(StatusCode::UNPROCESSABLE_ENTITY);
+        _ = res.add_header("HX-Retarget", "#rename-error", true);
+        res.render(Message::Error("Enter a valid name"));
+        return Ok(());
+    }
+
+    let (_, new_path) = authorize_path(
+        path.as_ref()
+            .parent()
+            .ok_or(Error::NotFound)?
+            .join(&new_name),
+        depot,
+    )
+    .await?;
+
+    match rename_without_overwriting(path.as_ref(), new_path.as_ref()).await {
+        Ok(()) => {
+            _ = res.add_header("HX-Trigger", "path-renamed", true);
+            res.render(Text::Html(String::new()));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            res.status_code(StatusCode::UNPROCESSABLE_ENTITY);
+            _ = res.add_header("HX-Retarget", "#rename-error", true);
+            res.render(Message::Error(
+                "A file or folder with that name already exists",
+            ));
+        }
+        Err(error) => return Err(Error::Anyhow(error.into())),
+    }
+
+    Ok(())
+}
+
+#[handler]
+async fn path_context_menu_handler(
+    depot: &Depot,
+    req: &mut Request,
+    res: &mut Response,
+) -> AppResult {
+    let path = req.query::<PathBuf>("path").ok_or(Error::NotFound)?;
+    let search = req.query::<bool>("search").unwrap_or(false);
+    let (access, authorized_path) = authorize_path(path, depot).await?;
+
+    let multiple = paths_from_request_id_params(depot, req).await?;
+
+    res.render(Text::Html(
+        views::path_context_menu(&authorized_path, search, &access, &multiple).into_string(),
+    ));
+
     Ok(())
 }
 
@@ -669,7 +828,7 @@ async fn sse_connected(depot: &Depot, req: &Request, res: &mut Response) -> AppR
         Page::search("")
     } else {
         let path_buf = PathBuf::from(path);
-        let authorized_path = authorize_path(path_buf, depot)?;
+        let (_, authorized_path) = authorize_path(path_buf, depot).await?;
         Page::from(authorized_path.as_ref())
     };
 
@@ -760,11 +919,7 @@ fn admin_routes() -> Router {
         .get(list_roots_handler)
         .push(Router::with_path("files").get(list_roots_handler))
         .push(Router::with_path("logout").delete(logout))
-        .push(
-            Router::with_path("new-folder")
-                .get(new_folder_handler)
-                .post(new_folder_handler),
-        )
+        .push(Router::with_path("new").get(new_handler).post(new_handler))
         .push(
             Router::with_path("upload")
                 .get(upload_handler)
@@ -775,6 +930,16 @@ fn admin_routes() -> Router {
                 .get(open_share_modal)
                 .post(create_share_handler)
                 .push(Router::with_path("{url}").delete(delete_share_handler)),
+        )
+        .push(
+            Router::with_path("unlink")
+                .get(unlink_handler)
+                .delete(unlink_handler),
+        )
+        .push(
+            Router::with_path("rename")
+                .get(rename_handler)
+                .patch(rename_handler),
         )
         .push(Router::with_path("shares").get(shares_handler))
 }
@@ -787,6 +952,7 @@ fn protected_routes() -> Router {
         .push(Router::with_path("download").get(download_handler))
         .push(Router::with_path("search").get(search_handler))
         .push(Router::with_path("sse").get(sse_connected))
+        .push(Router::with_path("path_context_menu").get(path_context_menu_handler))
 }
 
 pub(crate) async fn server(jobs: JobRunner) -> (Server<TcpAcceptor>, Router) {
@@ -822,4 +988,59 @@ pub(crate) async fn server(jobs: JobRunner) -> (Server<TcpAcceptor>, Router) {
 
     let server = Server::new(acceptor);
     (server, router)
+}
+
+#[cfg(test)]
+mod shared_access_path_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn shared_access_rejects_parent_traversal() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("path/to");
+        let shared_dir = parent.join("folder");
+        let sibling = parent.join("sibling.txt");
+        std::fs::create_dir_all(&shared_dir).unwrap();
+        std::fs::write(&sibling, "outside the share").unwrap();
+
+        let mut session = Session::new();
+        session
+            .insert(
+                "access",
+                Access::Shared(SharedAccess {
+                    expires_at: None,
+                    path_buf: shared_dir,
+                }),
+            )
+            .unwrap();
+        let mut depot = Depot::new();
+        depot.set_session(session);
+
+        match authorize_path(PathBuf::from("/folder/../sibling.txt"), &depot).await {
+            Err(Error::Forbidden) => {}
+            Ok((_, authorized)) => {
+                let resolved = authorized.as_ref().canonicalize().unwrap();
+                assert_eq!(resolved, sibling.canonicalize().unwrap());
+                panic!(
+                    "authorize_path accepted {}, which resolves outside the shared folder",
+                    authorized.as_ref().display()
+                );
+            }
+            Err(error) => panic!("unexpected authorization error: {error}"),
+        }
+    }
+
+    #[test]
+    fn access_scoped_path_scopes_path_to_shared_path() {
+        let requested_path = "/path/to/shared";
+        let scoped_path = "/shared";
+        let access = Access::Shared(SharedAccess {
+            expires_at: None,
+            path_buf: PathBuf::from(requested_path),
+        });
+        assert_eq!(
+            access_scoped_path(requested_path, &access),
+            String::from(scoped_path)
+        );
+    }
 }

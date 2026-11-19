@@ -1,8 +1,8 @@
 use std::{
     fmt::Write as _,
     fs::File,
-    io::{self, Write},
-    path::Path,
+    io::{self, Seek, Write},
+    path::{Path, PathBuf},
 };
 
 use salvo::Response;
@@ -41,12 +41,7 @@ pub(super) fn stream_directory(path: &Path, res: &mut Response) -> AppResult {
         .to_string_lossy();
     let filename = format!("{directory_name}.zip");
 
-    res.add_header("content-type", "application/zip", true)
-        .map_err(|error| anyhow::anyhow!(error))?;
-    res.add_header("content-disposition", attachment_header(&filename), true)
-        .map_err(|error| anyhow::anyhow!(error))?;
-    res.add_header("cache-control", "no-store", true)
-        .map_err(|error| anyhow::anyhow!(error))?;
+    set_zip_headers(res, &filename)?;
 
     let (sender, receiver) = mpsc::channel(2);
     let path = path.to_path_buf();
@@ -65,6 +60,66 @@ pub(super) fn stream_directory(path: &Path, res: &mut Response) -> AppResult {
 
     // No Content-Length: Hyper frames this stream with chunked encoding on HTTP/1.1.
     res.stream(ReceiverStream::new(receiver));
+    Ok(())
+}
+
+pub(super) fn stream_paths<P: AsRef<Path>>(
+    paths: impl IntoIterator<Item = P>,
+    res: &mut Response,
+) -> AppResult {
+    let paths = paths_with_same_parent(paths)?;
+    set_zip_headers(res, "archive.zip")?;
+
+    let (sender, receiver) = mpsc::channel(2);
+    tokio::task::spawn_blocking(move || {
+        let output = ChannelWriter {
+            sender: sender.clone(),
+        };
+        if let Err(error) = write_paths_zip(&paths, output) {
+            let message = error.to_string();
+            if sender.blocking_send(Err(io::Error::other(error))).is_err() {
+                return; // The client disconnected.
+            }
+            tracing::warn!(error = %message, "archive download failed");
+        }
+    });
+
+    res.stream(ReceiverStream::new(receiver));
+    Ok(())
+}
+
+fn paths_with_same_parent<P: AsRef<Path>>(
+    paths: impl IntoIterator<Item = P>,
+) -> AppResult<Vec<PathBuf>> {
+    let mut paths = paths.into_iter();
+    let first = paths.next().ok_or(Error::BadRequest("no paths selected"))?;
+    let first = first.as_ref();
+    let parent = first
+        .parent()
+        .filter(|_| first.file_name().is_some())
+        .ok_or(Error::BadRequest("invalid selected path"))?;
+    let mut selected = vec![first.to_path_buf()];
+
+    for path in paths {
+        let path = path.as_ref();
+        if path.parent() != Some(parent) || path.file_name().is_none() {
+            return Err(Error::BadRequest(
+                "selected paths must have the same parent",
+            ));
+        }
+        selected.push(path.to_path_buf());
+    }
+
+    Ok(selected)
+}
+
+fn set_zip_headers(res: &mut Response, filename: &str) -> AppResult {
+    res.add_header("content-type", "application/zip", true)
+        .map_err(|error| anyhow::anyhow!(error))?;
+    res.add_header("content-disposition", attachment_header(filename), true)
+        .map_err(|error| anyhow::anyhow!(error))?;
+    res.add_header("cache-control", "no-store", true)
+        .map_err(|error| anyhow::anyhow!(error))?;
     Ok(())
 }
 
@@ -98,14 +153,46 @@ fn write_directory_zip<W: Write>(root: &Path, output: W) -> anyhow::Result<W> {
     let mut archive = ZipWriter::new_stream(output);
     archive.add_directory(directory_name.as_ref(), SimpleFileOptions::default())?;
 
+    add_path_entries(&mut archive, root, 1)?;
+
+    Ok(archive.finish()?.into_inner())
+}
+
+fn write_paths_zip<W: Write>(paths: &[PathBuf], output: W) -> anyhow::Result<W> {
+    let mut archive = ZipWriter::new_stream(output);
+    for path in paths {
+        add_path_entries(&mut archive, path, 0)?;
+    }
+    Ok(archive.finish()?.into_inner())
+}
+
+fn add_path_entries<W: Write + Seek>(
+    archive: &mut ZipWriter<W>,
+    root: &Path,
+    min_depth: usize,
+) -> anyhow::Result<()> {
+    let root_name = root
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("invalid archive path"))?
+        .to_string_lossy();
     let file_options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
         .large_file(true);
 
-    for entry in WalkDir::new(root).follow_links(false).min_depth(1) {
+    if min_depth == 0 && std::fs::symlink_metadata(root)?.file_type().is_symlink() {
+        let target = std::fs::read_link(root)?;
+        archive.add_symlink(
+            root_name.as_ref(),
+            target.to_string_lossy(),
+            SimpleFileOptions::default(),
+        )?;
+        return Ok(());
+    }
+
+    for entry in WalkDir::new(root).follow_links(false).min_depth(min_depth) {
         let entry = entry?;
         let relative = entry.path().strip_prefix(root)?;
-        let mut archive_name = directory_name.to_string();
+        let mut archive_name = root_name.to_string();
         for component in relative.components() {
             archive_name.push('/');
             archive_name.push_str(&component.as_os_str().to_string_lossy());
@@ -123,11 +210,11 @@ fn write_directory_zip<W: Write>(root: &Path, output: W) -> anyhow::Result<W> {
         } else if entry.file_type().is_file() {
             let mut file = File::open(entry.path())?;
             archive.start_file(archive_name, file_options)?;
-            io::copy(&mut file, &mut archive)?;
+            io::copy(&mut file, &mut *archive)?;
         }
     }
 
-    Ok(archive.finish()?.into_inner())
+    Ok(())
 }
 
 #[cfg(test)]
@@ -157,6 +244,56 @@ mod tests {
     }
 
     #[test]
+    fn zip_contains_multiple_selected_files_and_directories() {
+        let parent = tempfile::tempdir().unwrap();
+        let file = parent.path().join("one.txt");
+        let directory = parent.path().join("folder");
+        std::fs::write(&file, "one").unwrap();
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::write(directory.join("two.txt"), "two").unwrap();
+
+        let paths = paths_with_same_parent([&file, &directory]).unwrap();
+        let bytes = write_paths_zip(&paths, Vec::new()).unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(archive.len(), 3);
+        assert!(archive.by_name("folder/").unwrap().is_dir());
+        let mut contents = String::new();
+        archive
+            .by_name("one.txt")
+            .unwrap()
+            .read_to_string(&mut contents)
+            .unwrap();
+        assert_eq!(contents, "one");
+        contents.clear();
+        archive
+            .by_name("folder/two.txt")
+            .unwrap()
+            .read_to_string(&mut contents)
+            .unwrap();
+        assert_eq!(contents, "two");
+    }
+
+    #[test]
+    fn selected_paths_must_have_the_same_immediate_parent() {
+        assert!(
+            paths_with_same_parent([Path::new("/path/to/file"), Path::new("/path/to/other")])
+                .is_ok()
+        );
+        for other in ["/path/to", "/path/to/file/subdir", "/different/other"] {
+            assert!(matches!(
+                paths_with_same_parent([Path::new("/path/to/file"), Path::new(other)]),
+                Err(Error::BadRequest(
+                    "selected paths must have the same parent"
+                ))
+            ));
+        }
+        assert!(matches!(
+            paths_with_same_parent(Vec::<PathBuf>::new()),
+            Err(Error::BadRequest("no paths selected"))
+        ));
+    }
+
+    #[test]
     fn attachment_name_encodes_unicode_and_quotes() {
         assert_eq!(
             attachment_header("a \"café\".zip"),
@@ -183,5 +320,24 @@ mod tests {
             .read_to_string(&mut target)
             .unwrap();
         assert_eq!(target, "../private.txt");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn selected_symlink_is_archived_without_following_it() {
+        let parent = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("private.txt"), "outside").unwrap();
+        let link = parent.path().join("link");
+        let file = parent.path().join("file.txt");
+        std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+        std::fs::write(&file, "inside").unwrap();
+
+        let paths = paths_with_same_parent([&link, &file]).unwrap();
+        let bytes = write_paths_zip(&paths, Vec::new()).unwrap();
+        let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        assert_eq!(archive.len(), 2);
+        assert!(archive.by_name("link").is_ok());
+        assert!(archive.by_name("link/private.txt").is_err());
     }
 }

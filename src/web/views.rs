@@ -9,7 +9,11 @@ use crate::{
         get_sorting,
     },
 };
-use std::path::{Path, PathBuf};
+use std::fmt::Write;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use base64_turbo::STANDARD;
 use maud::{DOCTYPE, Markup, PreEscaped, Render, html};
@@ -44,9 +48,34 @@ fn files_url(path: &str, access: &Access) -> String {
     )
 }
 
-fn download_url(path: &str, access: &Access) -> String {
+fn download_url<'a>(
+    path: &str,
+    selected: impl Iterator<Item = &'a i64>,
+    access: &Access,
+) -> String {
     let path = access_scoped_path(path, access);
-    access_url_with_query("/download", &[("path", &path)], access)
+    let mut link = access_url_with_query("/download", &[("path", &path)], access);
+
+    for id in selected {
+        let _ = write!(link, "&id={id}");
+    }
+
+    link
+}
+
+fn unlink_url<'a>(path: &str, selected: impl Iterator<Item = &'a i64>) -> String {
+    let mut link = format!("/unlink?{}", urlencode(&[("path", path)]));
+
+    for id in selected {
+        let _ = write!(link, "&id={id}");
+    }
+
+    link
+}
+
+fn path_context_menu_url(path: &str, access: &Access) -> String {
+    let path = access_scoped_path(path, access);
+    access_url_with_query("/path_context_menu", &[("path", &path)], access)
 }
 
 fn sse_url(path: &str, access: &Access) -> String {
@@ -268,7 +297,6 @@ pub(crate) fn layout(
     title: &str,
     restore_from_history: bool,
     view: &Markup,
-    page: &Page,
     access: &Access,
 ) -> Markup {
     html! {
@@ -290,8 +318,8 @@ pub(crate) fn layout(
                         }
                     }"#))
                 }
-                script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/htmx.min.js" {}
-                script src="https://cdn.jsdelivr.net/npm/htmx.org@next/dist/ext/hx-sse.min.js" {}
+                script src="https://cdn.jsdelivr.net/npm/htmx.org@4.x.x/dist/htmx.min.js" {}
+                script src="https://cdn.jsdelivr.net/npm/htmx.org@4.x.x/dist/ext/hx-sse.min.js" {}
                 script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js" {}
                 script src="https://cdn.jsdelivr.net/npm/dropzone@5.9.3/dist/min/dropzone.min.js" {}
                 script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js" {}
@@ -321,7 +349,7 @@ pub(crate) fn layout(
                             script { (PreEscaped("setTimeout(() => { htmx.process(document.body) }, 10)")) }
                         }
                     }
-                    (page_actions(&page.view, access, false))
+                    div #context-menu {}
                 }
                 div #modal {}
             }
@@ -329,79 +357,144 @@ pub(crate) fn layout(
     }
 }
 
-pub(crate) fn partial_page(page: &Page, view: &Markup, access: &Access) -> Markup {
+pub(crate) fn path_context_menu(
+    path: &AuthorizedPath,
+    search: bool,
+    access: &Access,
+    selected: &HashMap<i64, AuthorizedPath>,
+) -> Markup {
+    let has_selected = !selected.is_empty();
+    let path_str = path.as_ref().to_string_lossy();
     html! {
-        (view)
-        (page_actions(&page.view, access, true))
-    }
-}
-
-fn page_actions(view: &View, access: &Access, out_of_band: bool) -> Markup {
-    html! {
-        div #page-actions hx-swap-oob=[out_of_band.then_some("outerHTML")] {
-            @if matches!(access, Access::Admin) || matches!(view, View::File(_) | View::Dir(_)) {
-                details.dropdown x-ref="dropdown" {
-                    summary aria-label="Page actions" { i {} }
-                    ul {
-                        @if matches!((view, access), (View::Root, Access::Admin)) {
-                            li {
-                                a.share x-on:click="$refs.dropdown.open = false" href="/shares?all=true" hx-get="/shares?all=true" hx-target="#modal" {
-                                    i {}
-                                    "View shared links"
-                                }
+        div.open #context-menu "@click"="$refs.menu.classList.remove('open'); contextMenuClose(event)" x-ref="menu" {
+            ul.ui-menu {
+                @if has_selected {
+                    li.heading.multiselect {
+                        i {}
+                        span {
+                            "with "
+                                (selected.len())
+                                " selected"
+                        }
+                    }
+                }
+                li {
+                    @let link = download_url(path_str.as_ref(), selected.keys(), access);
+                    a.download href=(link) {
+                        i {}
+                        "Download"
+                    }
+                }
+                @if matches!(access, Access::Admin) {
+                    @if !has_selected && !search {
+                        li {
+                            @let link = format!("/rename?{}", urlencode(&[("path", path_str.as_ref())]));
+                            a.rename href=(link) hx-get=(link) hx-target="#modal" {
+                                i {}
+                                "Rename"
                             }
                         }
-                        @if matches!(access, Access::Admin) && matches!(view, View::File(_) | View::Dir(_)) {
-                            @let parent = match view {
-                                View::Dir(path) => path.as_path(),
-                                View::File(path) => path.parent().unwrap_or(path),
-                                _ => unreachable!(),
-                            };
+                    }
+                    @if !has_selected {
+                        li {
+                            @let link = format!("/share?{}", urlencode(&[("path", path_str.as_ref())]));
+                            a.share href=(link) hx-get=(link) hx-target="#modal" {
+                                i {}
+                                "Share"
+                            }
+                        }
+                        @let parent = path.as_ref().parent().unwrap_or(path.as_ref());
+                        @if !search {
+                            li.menu-divider role="separator" {}
                             li {
-                                @let link = format!("/new-folder?{}", urlencode(&[("parent", &parent.to_string_lossy())]));
-                                a.new-folder x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
+                                @let link = format!("/new?{}", urlencode(&[("parent", &parent.to_string_lossy())]));
+                                a.new-folder href=(link) hx-get=(link) hx-target="#modal" {
                                     i {}
                                     "New folder"
                                 }
                             }
                             li {
                                 @let link = format!("/upload?{}", urlencode(&[("parent", &parent.to_string_lossy())]));
-                                a.upload x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
+                                a.upload href=(link) hx-get=(link) hx-target="#modal" {
                                     i {}
                                     "Upload files"
                                 }
                             }
-                            li {
-                                @let link = format!("/share?{}", urlencode(&[("path", view.path())]));
-                                a.share x-on:click="$refs.dropdown.open = false" href=(link) hx-get=(link) hx-target="#modal" {
-                                    i {}
-                                    "Share"
-                                }
-                            }
                         }
-                        @if matches!(view, View::File(_) | View::Dir(_)) {
-                            li {
-                                a.download x-on:click="$refs.dropdown.open = false" href=(download_url(view.path(), access)) {
-                                    i {}
-                                    "Download"
-                                }
-                            }
-                        }
-                        @if matches!(access, Access::Admin) {
-                            @if !matches!(view, View::Search(_)) {
-                                li.menu-divider role="separator" {}
-                            }
-                            li {
-                                a.logout x-on:click="$refs.dropdown.open = false" href="/logout" hx-delete="/logout" hx-target="#container" {
-                                    i {}
-                                    "Logout"
-                                }
-                            }
+                    }
+                    li.menu-divider role="separator" {}
+                    li {
+                        @let link = unlink_url(path_str.as_ref(), selected.keys());
+                        a.delete href=(link) hx-get=(link) hx-target="#modal" {
+                            i {}
+                            "Delete"
                         }
                     }
                 }
             }
         }
+    }
+}
+
+fn page_actions(view: &View, access: &Access) -> Markup {
+    match view {
+        View::Root | View::Search(_) => html! {},
+        View::Dir(path) | View::File(path) => html! {
+            details.dropdown #page-actions x-ref="dropdown" {
+                summary {
+                    svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" viewBox="0 0 16 16" {
+                        path d="M3 9.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3m5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3m5 0a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3" {}
+                    }
+                }
+                ul.ui-menu x-on:click="$refs.dropdown.open = false" {
+                    @if matches!(access, Access::Admin) {
+                        @if matches!(view, View::Dir(_)) {
+                            li {
+                                @let link = format!("/new?{}", urlencode(&[("parent", &path.to_string_lossy())]));
+                                a.new-folder href=(link) hx-get=(link) hx-target="#modal" {
+                                    i {}
+                                    "New folder"
+                                }
+                            }
+                            li {
+                                @let link = format!("/upload?{}", urlencode(&[("parent", &path.to_string_lossy())]));
+                                a.upload href=(link) hx-get=(link) hx-target="#modal" {
+                                    i {}
+                                    "Upload files"
+                                }
+                            }
+                        }
+                        li {
+                            @let link = format!("/share?{}", urlencode(&[("path", view.path())]));
+                            a.share href=(link) hx-get=(link) hx-target="#modal" {
+                                i {}
+                                "Share"
+                            }
+                        }
+                    }
+                    li {
+                        a.download href=(download_url(view.path(), std::iter::empty(), access)) {
+                            i {}
+                            "Download"
+                            @if matches!(view, View::File(_)) {
+                                " file"
+                            } @else if matches!(view, View::Dir(_)) {
+                                " folder"
+                            }
+                        }
+                    }
+                    @if matches!(access, Access::Admin) {
+                        li.menu-divider role="separator" {}
+                        li {
+                            a.logout href="/logout" hx-delete="/logout" hx-target="#container" {
+                                i {}
+                                "Logout"
+                            }
+                        }
+                    }
+                }
+            }
+        },
     }
 }
 
@@ -413,7 +506,7 @@ pub(crate) fn new_folder_modal(parent: &Path) -> Markup {
                     span { "New folder" }
                     button aria-label="Close" rel="prev" x-on:click="$refs.modal.close()" {}
                 }
-                form #new-folder-form action="/new-folder" hx-post="/new-folder" hx-target="#modal" {
+                form #new-folder-form action="/new" hx-post="/new" hx-target="#modal" {
                     input type="hidden" name="parent" x-ref="parent" value=(parent.to_string_lossy());
                     label for="new-folder-name" { "Folder name or path" }
                     input #new-folder-name type="text" name="name" x-model="folderName" placeholder="path/to/new/folder" autofocus aria-describedby="new-folder-path new-folder-error";
@@ -771,6 +864,29 @@ fn root_view(sources: &[&PathBuf]) -> Markup {
     html! {
         div.root-page {
             section aria-labelledby="sources-heading" {
+                details.dropdown.menu x-ref="dropdown" {
+                    summary {
+                        svg xmlns="http://www.w3.org/2000/svg" fill="currentColor"  viewBox="0 0 16 16" {
+                            path fill-rule="evenodd" d="M2.5 12a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5m0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5m0-4a.5.5 0 0 1 .5-.5h10a.5.5 0 0 1 0 1H3a.5.5 0 0 1-.5-.5" {}
+                        }
+                        "Menu"
+                    }
+                    ul.ui-menu x-on:click="$refs.dropdown.open = false" {
+                        li {
+                            a.share  href="/shares?all=true" hx-get="/shares?all=true" hx-target="#modal" {
+                                i {}
+                                "View shared links"
+                            }
+                        }
+                        li.menu-divider role="separator" {}
+                        li {
+                            a.logout href="/logout" hx-delete="/logout" hx-target="#container" {
+                                i {}
+                                "Logout"
+                            }
+                        }
+                    }
+                }
                 h2 #sources-heading { "Sources" }
                 @if sources.is_empty() {
                     p { "No sources configured." }
@@ -836,16 +952,12 @@ fn breadcrumbs(view: &View, query_string: &str, access: &Access) -> Markup {
     let crumbs = view.breadcrumbs(access);
 
     html! {
-        @if !crumbs.is_empty() {
-            nav {
-                ul #breadcrumbs {
-                    @for crumb in crumbs {
-                        @let link = files_url(&format!("{}{}", crumb.unscoped_path.unwrap_or_default(), query_string), access);
-                        li {
-                            a href=(link) hx-get=(link) x-on:click="search_q = ''" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" hx-push-url="true" {
-                                (crumb.text)
-                            }
-                        }
+        ul #breadcrumbs {
+            @for crumb in crumbs {
+                @let link = files_url(&format!("{}{}", crumb.unscoped_path.unwrap_or_default(), query_string), access);
+                li {
+                    a href=(link) hx-get=(link) x-on:click="search_q = ''" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" hx-push-url="true" {
+                        (crumb.text)
                     }
                 }
             }
@@ -880,73 +992,154 @@ fn file_list(
     }
 
     html! {
-        (breadcrumbs(view, &query_string, access))
-
-        table.striped hx-get={ (files_url(view.path(), access)) (&query_string) } hx-trigger="reload-view" hx-target="#view" {
-            thead hx-sse:connect={ (sse_url(view.path(), access)) } hx-trigger="load delay:1s" hx-config="ws.pauseOnBackground: false" {
-                tr {
-                    th { }
-                    @let (sort, order) = get_sorting(req);
-                    (file_list_header(&Sort::Name, &sort, &order, req))
-                    (file_list_header(&Sort::Size, &sort, &order, req))
-                    (file_list_header(&Sort::LastModified, &sort, &order, req))
-                }
-            }
-            tbody {
-                @if files.is_empty() {
-                    tr.empty {
-                        td {}
-                        td colspan="3" { "Empty" }
-                    }
-                } @else {
-                    @for file in files {
-                        @let link = format!("{}{}", files_url(&file.path_buf().to_string_lossy().clone(), access), &query_string);
-                        (row(file, &link, show_full_paths, access))
-                    }
-                }
-            }
+        nav {
+            (breadcrumbs(view, &query_string, access))
+            (page_actions(view, access))
         }
-        footer {
-            (total_dirs)
-                @if total_dirs == 1 {
-                    " folder, "
-                } @else {
-                    " folders, "
+        div.paths x-data="{ checked: new Set() }" {
+            table.striped hx-get={ (files_url(view.path(), access)) (&query_string) }
+            hx-trigger="reload-view" hx-target="#view" {
+                thead hx-sse:connect={ (sse_url(view.path(), access)) } hx-trigger="load delay:1s"
+                    hx-config="ws.pauseOnBackground: false" {
+                        tr {
+                            th.check { }
+                            @let (sort, order) = get_sorting(req);
+                            (file_list_header(&Sort::Name, &sort, &order, req))
+                                (file_list_header(&Sort::Size, &sort, &order, req))
+                                (file_list_header(&Sort::LastModified, &sort, &order, req))
+                        }
+                    }
+                tbody {
+                    @if files.is_empty() {
+                        tr.empty {
+                            td colspan="4" { "Empty" }
+                        }
+                    } @else {
+                        @for file in files {
+                            @let link = format!("{}{}", files_url(&file.path_buf().to_string_lossy().clone(), access), &query_string);
+                            (row(view, file, &link, show_full_paths, access))
+                        }
+                    }
                 }
-            (total_files)
-                @if total_files == 1 {
-                    " file, "
-                } @else {
-                    " files, "
-                }
-            (format_size(total_size)) " total "
+                tfoot {
+                    tr {
+                        td colspan="10" {
+                            span.wrap {
+                                span.stats {
+                                    (total_dirs)
+                                        @if total_dirs == 1 {
+                                            " folder, "
+                                        } @else {
+                                            " folders, "
+                                        }
+                                    (total_files)
+                                        @if total_files == 1 {
+                                            " file, "
+                                        } @else {
+                                            " files, "
+                                        }
+                                    (format_size(total_size)) " total "
+                                }
 
-            @if matches!(access, Access::Admin) {
-                span #index-progress {
-                    (index_progress(progress))
+                                @if matches!(access, Access::Admin) {
+                                    span #index-progress {
+                                        (index_progress(progress))
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-fn row(record: &ExistingPathRecord, link: &str, show_full_paths: bool, access: &Access) -> Markup {
+#[allow(clippy::needless_pass_by_value)]
+fn row_cell(
+    record: &ExistingPathRecord,
+    contextmenu_url: &str,
+    class: &str,
+    contents: Markup,
+) -> Markup {
+    let check_fix = if class == "check" {
+        Some(
+            "$refs.cb.checked = !$refs.cb.checked; $refs.cb.dispatchEvent(new Event('change', { bubbles: true }))",
+        )
+    } else {
+        None
+    };
     html! {
-        tr.(file_row_class(record)) x-on:click="search_q = ''" hx-get=(link) hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" hx-push-url="true" {
-            td.icon { i {} }
-            td.name {
-                span {
-                    (record.name)
-                    @if show_full_paths {
-                        em { (access_scoped_path(record.parent.as_deref().unwrap_or("/"), access)) }
+        td .(class) "@click.stop"=[check_fix]
+            hx-get=(contextmenu_url)
+            hx-trigger="contextmenu"
+            hx-target="#context-menu"
+            hx-swap="outerHTML"
+            hx-include={"#r" (record.id) " .selected-path"}
+            "@contextmenu"="rowContextMenu(event)"
+            hx-on::after:swap="repositionContextMenu(event)" {
+                (contents)
+            }
+    }
+}
+
+fn row(
+    view: &View,
+    record: &ExistingPathRecord,
+    link: &str,
+    show_full_paths: bool,
+    access: &Access,
+) -> Markup {
+    let mut contextmenu_url =
+        path_context_menu_url(record.path_buf().to_string_lossy().as_ref(), access);
+    if matches!(view, View::Search(_)) {
+        contextmenu_url = format!("{contextmenu_url}&search=true");
+    }
+    html! {
+        tr.(file_row_class(record)) id={ "r"(record.id) } x-on:click="search_q = ''"
+            hx-get=(link)
+            hx-target="#view"
+            hx-swap="innerHTML show:top showTarget:#container"
+            hx-push-url="true"
+            x-data={
+                "{
+                    on: false,
+                    id: " (record.id) ",
+                    toggle(o) {
+                        this.on = o;
+                        o ? checked.add(this.id) : checked.delete(this.id)
+                    }
+                }"
+            }
+            x-bind:class="on ? 'checked' : ''" {
+            template x-for="path in checked" {
+                input.selected-path name="id" type="hidden" x-model="path";
+            }
+
+            (row_cell(record, &contextmenu_url, "check", html! {
+                input type="checkbox" "@click.stop"="" x-ref="cb" "@change"="toggle($el.checked)" {}
+            }))
+
+            (row_cell(record, &contextmenu_url, "name", html! {
+                span.wrapper {
+                    i.icon {}
+                    span {
+                        (record.name)
+                        @if show_full_paths {
+                            em { (access_scoped_path(record.parent.as_deref().unwrap_or("/"), access)) }
+                        }
                     }
                 }
-            }
-            td.size { (format_size(record.size)) }
-            td.last_modified {
+            }))
+
+            (row_cell(record, &contextmenu_url, "size", html! {
+                (format_size(record.size))
+            }))
+
+            (row_cell(record, &contextmenu_url, "last_modified", html! {
                 @let lastmod = record.last_modified.map_or(String::new(), |lm| lm.to_string());
                 time x-data={ "{ time: timeAgo(" (lastmod) ") }" } x-text="time" datetime=(lastmod) { (lastmod) }
-            }
+            }))
         }
     }
 }
@@ -976,7 +1169,10 @@ async fn file_view(
         .ok_or(Error::NotFound)?;
 
     Ok(html! {
-        (breadcrumbs(view, &query_string, access))
+        nav {
+            (breadcrumbs(view, &query_string, access))
+            (page_actions(view, access))
+        }
         section #file-contents { (preview_file(file_path, access).await? ) }
     })
 }
@@ -1065,7 +1261,7 @@ fn no_preview(f: &str, access: &Access) -> Markup {
         div.no-preview {
             h4 { "No preview is available for this file." }
             p {
-                a role="button" href={ (download_url(f, access)) } { "Download" }
+                a role="button" href={ (download_url(f, std::iter::empty(), access)) } { "Download" }
             }
         }
     }
@@ -1302,70 +1498,74 @@ pub(crate) fn shared_link_password(
     }
 }
 
-#[cfg(test)]
-mod page_action_tests {
-    use super::*;
-
-    #[test]
-    fn actions_follow_the_view_and_only_admins_get_logout() {
-        let root = page_actions(&View::Root, &Access::Admin, false).into_string();
-        assert!(root.contains("View shared links"));
-        assert!(!root.contains("hx-swap-oob"));
-        assert!(!root.contains(">Download<"));
-        assert!(!root.contains("New folder"));
-        assert!(!root.contains("Upload files"));
-        assert!(root.find("View shared links").unwrap() < root.find("Logout").unwrap());
-
-        let directory =
-            page_actions(&View::Dir(PathBuf::from("/source")), &Access::Admin, false).into_string();
-        assert!(!directory.contains("View shared links"));
-        assert!(directory.contains("New folder"));
-        assert!(directory.contains("Upload files"));
-        assert!(directory.contains("hx-get=\"/new-folder?parent=%2Fsource\""));
-        assert!(directory.contains("hx-get=\"/upload?parent=%2Fsource\""));
-        assert!(directory.find(">Share<").unwrap() < directory.find(">Download<").unwrap());
-        assert!(directory.find(">Download<").unwrap() < directory.find(">Logout<").unwrap());
-
-        let search =
-            page_actions(&View::Search("example".into()), &Access::Admin, false).into_string();
-        assert!(!search.contains("View shared links"));
-        assert!(!search.contains(">Download<"));
-        assert!(!search.contains("New folder"));
-        assert!(!search.contains("Upload files"));
-        assert!(search.contains(">Logout<"));
-
-        let shared = Access::Shared(SharedAccess {
-            expires_at: None,
-            path_buf: PathBuf::from("/source"),
-        });
-        let shared_directory =
-            page_actions(&View::Dir(PathBuf::from("/source")), &shared, false).into_string();
-        assert!(!shared_directory.contains(">Share<"));
-        assert!(!shared_directory.contains("New folder"));
-        assert!(!shared_directory.contains("Upload files"));
-        assert!(shared_directory.contains(">Download<"));
-        assert!(!shared_directory.contains(">Logout<"));
-
-        let shared_search =
-            page_actions(&View::Search("example".into()), &shared, false).into_string();
-        assert!(!shared_search.contains("<details"));
-
-        let file = page_actions(
-            &View::File(PathBuf::from("/source/photo.jpg")),
-            &Access::Admin,
-            false,
-        )
-        .into_string();
-        assert!(file.contains("hx-get=\"/new-folder?parent=%2Fsource\""));
-        assert!(file.contains("hx-get=\"/upload?parent=%2Fsource\""));
+pub(crate) fn unlink_modal(paths: &HashMap<i64, AuthorizedPath>) -> Markup {
+    html! {
+        dialog open x-ref="modal" x-data="{}" {
+            article "@click.outside"="$refs.modal.close()" {
+                header {
+                    span {
+                        "Delete " (paths.len())
+                        @if paths.len() == 1 {
+                            " path"
+                        } @else {
+                            " paths"
+                        }
+                    }
+                    button aria-label="Close" rel="prev" x-on:click="$refs.modal.close()" {}
+                }
+                div.alert {
+                    form action="/unlink" hx-delete="/unlink" hx-target="#modal" id="unlink-form" {
+                        p { "Warning! The following will be permanently deleted:" }
+                        ul {
+                            @for (id, path) in paths.iter() {
+                                input type="hidden" name="id" value=(id);
+                                li { (path.as_ref().to_string_lossy()) }
+                            }
+                        }
+                        p { "Proceed?" }
+                    }
+                }
+                footer {
+                    button form="unlink-form" { "Delete" }
+                }
+            }
+        }
     }
+}
 
-    #[test]
-    fn partial_page_replaces_the_search_bar_menu() {
-        let markup =
-            partial_page(&Page::root(), &html! { p { "Sources" } }, &Access::Admin).into_string();
-        assert!(markup.contains("hx-swap-oob=\"outerHTML\""));
-        assert!(markup.contains("id=\"page-actions\""));
-        assert!(markup.contains("View shared links"));
+pub(crate) fn rename_modal(path: &AuthorizedPath) -> Markup {
+    let name = path
+        .as_ref()
+        .file_name()
+        .map(|f| f.to_string_lossy())
+        .unwrap_or_default();
+    let parent = path
+        .as_ref()
+        .parent()
+        .map(|f| f.to_string_lossy())
+        .unwrap_or_default();
+    let path = path.as_ref().to_string_lossy();
+    html! {
+        dialog open x-ref="modal" x-data={"{ name: '" (name) "', parent: '" (parent) "' }"} {
+            article "@click.outside"="$refs.modal.close()" {
+                header {
+                    span {
+                        "Rename "
+                        code { (name) }
+                    }
+                    button aria-label="Close" rel="prev" x-on:click="$refs.modal.close()" {}
+                }
+                form #rename-form action="/rename" hx-patch="/rename" hx-target="#modal" {
+                    input type="hidden" name="path" x-ref="path" value=(path);
+                    label for="new-name" { "New name" }
+                    input #new-name type="text" name="name" x-model="name" autofocus autocomplete="off";
+                    small x-text="(parent.endsWith('/') ? parent : parent + '/') + name" {}
+                    div #rename-error role="alert" {}
+                }
+                footer {
+                    button form="rename-form" { "Rename" }
+                }
+            }
+        }
     }
 }

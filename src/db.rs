@@ -317,6 +317,19 @@ impl ExistingPathRecord {
             .fetch_optional(app::db())
             .await
     }
+
+    pub(crate) async fn find_by_id(id: i64) -> Result<Self, sqlx::Error> {
+        sqlx::query_as::<_, Self>("SELECT * FROM paths WHERE id = ?")
+            .bind(id)
+            .fetch_one(app::db())
+            .await
+    }
+
+    pub(crate) async fn find_many_by_id(ids: &[i64]) -> Result<Vec<Self>, sqlx::Error> {
+        let sql = expand_vec_placeholder("SELECT * FROM paths WHERE id IN (?)", ids.len());
+        let query = sqlx::query_as::<_, ExistingPathRecord>(AssertSqlSafe(sql));
+        bind_vec(query, ids).fetch_all(app::db()).await
+    }
 }
 
 pub(crate) async fn list_paths(

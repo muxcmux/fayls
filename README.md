@@ -1,37 +1,38 @@
 # Fayls
 
 Fayls is a minimal self-hosted file browser - an alternative to `python -m http.server` or Apache's
-directory index (mod_dir), but with search and sharing functionality.
+directory index (mod_dir), but with search and sharing functionality, and a few basic file ops.
 
 <img width="1020" alt="Fayls browsing screenshot" src="https://github.com/user-attachments/assets/08ea9e94-48c1-47f5-8578-c9a3300a86e5" />
 
 ## Features
 
 - Lists dirs and files
+- Search by filename or contents
 - Sort by name/last modified date/size
 - Live server updates with sse
-- Search by filename or contents
 - Download files and ZIP archives of directories
 - Preview some files:
     - images
-    - pdf
+    - pdf (browser dependent)
     - docx, pptx, and supported legacy doc/ppt files
     - xlsx, xls, ods, and modern Apple Numbers spreadsheets
     - epubs
     - ttf, otf, and woff fonts
     - gltf, glb, ply, and stl 3D models
-    - any utf8 encoded text files
     - common audio/video formats
-    - (more on the way!)
-- Sharing
+    - any utf8 encoded text files
+    - (more on the way, PRs welcome!)
+- Sharing (read only)
     - create shared links to share files/folders.
     - shared link base domain configurable
     - shared views get the same functionality: (listing, downloading, previewing, searching), only
     scoped to the shared path
-- Mutating files:
+- Mutating files (admin only):
     - create dirs and subdirs
     - upload files
-    - (more fs operations coming)
+    - rename paths
+    - delete
 
 ## Run with Docker
 

@@ -123,6 +123,31 @@ async fn create_folder_path(parent: &Path, segments: &[&str]) -> Result<(), &'st
     Ok(())
 }
 
+pub(crate) async fn rename_without_overwriting(
+    path: &Path,
+    new_path: &Path,
+) -> std::io::Result<()> {
+    match tokio::fs::symlink_metadata(new_path).await {
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            "destination path already exists",
+        )),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            tokio::fs::rename(path, new_path).await
+        }
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) async fn remove_path(path: &Path) -> std::io::Result<()> {
+    let metadata = tokio::fs::symlink_metadata(path).await?;
+    if metadata.is_dir() {
+        tokio::fs::remove_dir_all(path).await
+    } else {
+        tokio::fs::remove_file(path).await
+    }
+}
+
 #[cfg(test)]
 mod folder_tests {
     use super::*;

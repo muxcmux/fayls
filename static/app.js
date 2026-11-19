@@ -62,13 +62,17 @@ function showRequestError(message) {
 
 let notificationTimer;
 
-htmx.on('folder-created', () => {
+function notify(text) {
   const notification = document.getElementById('notification');
-  document.getElementById('notification-text').textContent = 'Folder created';
+  document.getElementById('notification-text').textContent = text;
   notification.hidden = false;
   clearTimeout(notificationTimer);
   notificationTimer = setTimeout(() => { notification.hidden = true; }, 5000);
-});
+}
+
+htmx.on('folder-created', () => notify('Folder created'));
+htmx.on('path-deleted', () => notify('Path deleted'));
+htmx.on('path-renamed', () => notify('Path renamed'));
 
 htmx.on('htmx:before:request', (event) => {
   const path = new URL(event.detail.ctx.request.action, document.baseURI).pathname;
@@ -244,4 +248,28 @@ async function loadFontPreview(url, signal) {
   if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
   document.fonts.add(face);
   return face;
+}
+
+// context menu shite
+let x, y;
+function rowContextMenu(event) {
+  event.preventDefault()
+  x = event.x
+  y = event.y
+  event.currentTarget.parentElement.classList.add('highlight')
+}
+function repositionContextMenu(event) {
+  const wrapper = document.getElementById('context-menu');
+  const menu = wrapper.querySelector('ul');
+  const w = menu.clientWidth;
+  const h = menu.clientHeight;
+  const sw = window.innerWidth;
+  const sh = window.innerHeight;
+  const mx = (x + w > sw) ? x - w : x;
+  const my = (y + h > sh) ? y - h : y;
+  menu.style = `transform: translate(${mx}px, ${my}px)`;
+}
+function contextMenuClose(_) {
+  const rows = document.getElementById('view').querySelectorAll('.paths table tr');
+  rows.forEach((r => r.classList.remove('highlight')))
 }

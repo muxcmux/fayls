@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 use futures_util::StreamExt;
 use std::{
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -63,6 +64,7 @@ async fn scan_existing() -> Result<(), sqlx::Error> {
     let mut all = sqlx::query_as::<_, ExistingPathRecord>("SELECT * FROM paths").fetch(app::db());
 
     let mut txn = app::db().begin().await?;
+    let mut reload_pages = HashSet::new();
 
     while let Some(Ok(record)) = all.next().await {
         if record.path_buf().exists() {
@@ -72,13 +74,18 @@ async fn scan_existing() -> Result<(), sqlx::Error> {
         record.remove(&mut *txn).await?;
         let path = record.path_buf();
         tracing::info!("removing deleted file: {:?}", &path);
-        web::reload(Page::from(&path));
+        if let Some(parent) = path.parent() {
+            reload_pages.insert(Page::from(parent));
+        }
         if config::get().app.canonicalized_sources().contains(&path) {
-            web::reload(Page::root());
+            reload_pages.insert(Page::root());
         }
     }
 
     txn.commit().await?;
+    for page in reload_pages {
+        web::reload(page);
+    }
 
     Ok(())
 }
@@ -188,18 +195,19 @@ async fn index(
     }
 
     let mut txn = app::db().begin().await?;
+    let mut reload_pages = HashSet::new();
 
     for new in to_insert {
-        let (mut existing, inserted) = new.insert_or_get(&mut *txn).await?;
+        let (mut existing, inserted) = new.insert_or_get(&mut txn).await?;
         if !inserted {
             existing
                 .touch(new.size, new.last_modified, &mut *txn)
                 .await?;
         }
         let path = existing.path_buf();
-        web::reload(Page::from(&path));
+        reload_pages.insert(Page::from(&path));
         if config::get().app.canonicalized_sources().contains(&path) {
-            web::reload(Page::root());
+            reload_pages.insert(Page::root());
         }
         to_reindex.push(existing);
     }
@@ -207,18 +215,28 @@ async fn index(
     for (mut existing, size, last_modified) in to_update {
         existing.touch(size, last_modified, &mut *txn).await?;
         let path = existing.path_buf();
-        web::reload(Page::from(&path));
+        reload_pages.insert(Page::from(&path));
         if config::get().app.canonicalized_sources().contains(&path) {
-            web::reload(Page::root());
+            reload_pages.insert(Page::root());
         }
         to_reindex.push(existing);
     }
 
     for record in to_delete.iter().flatten() {
         record.remove(&mut *txn).await?;
+        let path = record.path_buf();
+        if let Some(parent) = path.parent() {
+            reload_pages.insert(Page::from(parent));
+        }
+        if config::get().app.canonicalized_sources().contains(&path) {
+            reload_pages.insert(Page::root());
+        }
     }
 
     txn.commit().await?;
+    for page in reload_pages {
+        web::reload(page);
+    }
 
     for item in to_reindex {
         if token.is_cancelled() {

@@ -549,8 +549,8 @@ async fn new_handler(req: &mut Request, res: &mut Response) -> AppResult {
     match create_folder(&parent, &name).await {
         Ok(()) => {
             res.status_code(StatusCode::CREATED);
-            _ = res.add_header("HX-Trigger", "folder-created", true);
-            res.render(Text::Html(String::new()));
+            res.render(Message::CloseModal);
+            res.render(Message::Notification("Folder created"));
         }
         Err(message) => {
             res.status_code(StatusCode::UNPROCESSABLE_ENTITY);
@@ -589,8 +589,13 @@ async fn unlink_handler(depot: &Depot, req: &mut Request, res: &mut Response) ->
             .map_err(|error| Error::Anyhow(error.into()))?;
     }
 
-    _ = res.add_header("HX-Trigger", "path-deleted", true);
-    res.render(Text::Html(String::new()));
+    let paths_count = paths.len();
+    let paths_text = if paths_count == 1 { "path" } else { "paths" };
+
+    res.render(Message::CloseModal);
+    res.render(Message::Notification(&format!(
+        "Deleted {paths_count} {paths_text}"
+    )));
     Ok(())
 }
 
@@ -629,8 +634,8 @@ async fn rename_handler(depot: &Depot, req: &mut Request, res: &mut Response) ->
 
     match rename_without_overwriting(path.as_ref(), new_path.as_ref()).await {
         Ok(()) => {
-            _ = res.add_header("HX-Trigger", "path-renamed", true);
-            res.render(Text::Html(String::new()));
+            res.render(Message::CloseModal);
+            res.render(Message::Notification("Path renamed"));
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             res.status_code(StatusCode::UNPROCESSABLE_ENTITY);

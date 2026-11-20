@@ -121,16 +121,34 @@ impl Page {
 pub(crate) enum Message<'a> {
     Error(&'a str),
     Success(&'a str),
+    Notification(&'a str),
+    CloseModal,
 }
 
 impl Message<'_> {
     fn to_html(&self) -> Markup {
         match self {
+            Self::CloseModal => html! {
+                hx-partial hx-target="#modal" {}
+            },
             Self::Error(msg) => html! {
                 div.alert { (msg) }
             },
             Self::Success(msg) => html! {
                 div.alert.success { (msg) }
+            },
+            Self::Notification(msg) => html! {
+                hx-partial hx-target="#notification" hx-swap="outerHTML" {
+                    div #notification x-ref="notification"
+                        class="alert success" role="status"
+                        x-data="{}"
+                        x-init="setTimeout(() => { $refs.notification.hidden = true }, 5000)" {
+                        span #notification-text { (msg) }
+                        button type="button"
+                        "@click"="$refs.notification.hidden = true"
+                        aria-label="Dismiss notification" { "×" }
+                    }
+                }
             },
         }
     }
@@ -335,10 +353,7 @@ pub(crate) fn layout(
                     span #request-error-text {}
                     button type="button" aria-label="Dismiss error" { "×" }
                 }
-                div #notification class="alert success" role="status" hidden {
-                    span #notification-text {}
-                    button type="button" aria-label="Dismiss notification" { "×" }
-                }
+                div #notification {}
                 main #container.container-fluid x-data="{ search_q: new URLSearchParams(location.search).get('q'), multiselecting: false }" {
                     form #search hx-get=(access_base_url("/search", access)) hx-push-url="true" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" {
                         input type="search" x-model="search_q" name="q" placeholder="Search...";

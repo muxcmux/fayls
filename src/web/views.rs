@@ -925,6 +925,9 @@ fn root_view(sources: &[&PathBuf]) -> Markup {
                     }
                 }
             }
+            small.build-info.text-muted {
+                "fayls v." (env!("CARGO_PKG_VERSION")) " (" (env!("FAYLS_COMMIT")) ", " (env!("FAYLS_PROFILE")) " profile)"
+            }
         }
     }
 }

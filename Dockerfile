@@ -8,6 +8,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
+RUN apk add --no-cache git
 COPY --from=planner /app/recipe.json recipe.json
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/app/target \
@@ -34,4 +35,3 @@ COPY --from=builder /app/extractor /usr/local/bin/extractor
 COPY ./static /fayls/static
 
 CMD ["fayls"]
-

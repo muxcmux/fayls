@@ -72,6 +72,7 @@ async fn scan_existing() -> Result<(), sqlx::Error> {
         }
 
         record.remove(&mut *txn).await?;
+        reload_pages.insert(Page::search(""));
         let path = record.path_buf();
         tracing::info!("removing deleted file: {:?}", &path);
         if let Some(parent) = path.parent() {
@@ -196,6 +197,8 @@ async fn index(
 
     let mut txn = app::db().begin().await?;
     let mut reload_pages = HashSet::new();
+    let paths_changed =
+        !to_insert.is_empty() || !to_update.is_empty() || to_delete.iter().any(Option::is_some);
 
     for new in to_insert {
         let (mut existing, inserted) = new.insert_or_get(&mut txn).await?;
@@ -234,6 +237,9 @@ async fn index(
     }
 
     txn.commit().await?;
+    if paths_changed {
+        reload_pages.insert(Page::search(""));
+    }
     for page in reload_pages {
         web::reload(page);
     }

@@ -45,8 +45,6 @@ pre {
 
 dialog {
   article {
-    overflow: visible;
-
     header {
       display: flex;
       align-items: center;

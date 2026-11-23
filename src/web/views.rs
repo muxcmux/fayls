@@ -414,7 +414,7 @@ pub(crate) fn path_context_menu(
                     }
                 }
                 @if matches!(access, Access::Admin) {
-                    @if !has_selected && !search && !empty {
+                    @if !has_selected && !empty {
                         li {
                             @let link = format!("/rename?{}", urlencode(&[("path", path_str.as_ref())]));
                             a.rename href=(link) hx-get=(link) hx-target="#modal" {
@@ -1014,6 +1014,14 @@ fn file_list(
     let mut queries_without_search_param = req.queries().clone();
     queries_without_search_param.remove("q");
     let query_string = queries_to_string(&queries_without_search_param);
+    let reload_url = match view {
+        View::Search(_) => format!(
+            "{}{}",
+            access_base_url("/search", access),
+            queries_to_string(req.queries())
+        ),
+        _ => format!("{}{}", files_url(view.path(), access), query_string),
+    };
 
     let mut total_files = 0;
     let mut total_dirs = 0;
@@ -1048,7 +1056,7 @@ fn file_list(
             }
         }" {
             div #context-menu {}
-            table.striped hx-get={ (files_url(view.path(), access)) (&query_string) }
+            table.striped hx-get=(reload_url)
                 ":class"="multiselecting ? 'multiselecting' : ''"
                 hx-trigger="reload-view" hx-target="#view" {
                 thead hx-sse:connect={ (sse_url(view.path(), access)) } hx-trigger="load delay:1s"

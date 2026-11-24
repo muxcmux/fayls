@@ -1589,7 +1589,7 @@ fn share_list_modal(
                                 }
                                 td.actions {
                                     a.copy x-ref="copy" data-tooltip="Copy link" href="#" "@click.prevent"=(copy) { i {}}
-                                    a.delete data-tooltip="Delete" href="#" hx-confirm="Are you sure?" hx-delete={ "/share/" (share.url) (delete_suffix) } hx-target="#modal" { i {}}
+                                    a.delete data-tooltip="Delete" data-placement="left" href="#" hx-confirm="Are you sure?" hx-delete={ "/share/" (share.url) (delete_suffix) } hx-target="#modal" { i {}}
                                 }
                             }
                         }
@@ -1641,22 +1641,27 @@ pub(crate) fn unlink_modal(paths: &HashMap<i64, AuthorizedPath>) -> Markup {
             article "@click.outside"="$refs.modal.close()" {
                 header {
                     span {
-                        "Delete " (paths.len())
-                        @if paths.len() == 1 {
-                            " path"
-                        } @else {
-                            " paths"
-                        }
+                        "Confirm delete"
                     }
                     button aria-label="Close" rel="prev" x-on:click="$refs.modal.close()" {}
                 }
                 div.alert {
                     form action="/unlink" hx-delete="/unlink" hx-target="#modal" id="unlink-form" {
-                        p { "Warning! The following will be permanently deleted:" }
-                        ul {
-                            @for (id, path) in paths.iter() {
-                                input type="hidden" name="id" value=(id);
-                                li { (path.as_ref().to_string_lossy()) }
+                        details open[paths.len() < 6] {
+                            summary {
+                                "Delete "
+                                (paths.len())
+                                @if paths.len() == 1 {
+                                    " item"
+                                } @else {
+                                    " items"
+                                }
+                            }
+                            ul {
+                                @for (id, path) in paths.iter() {
+                                    input type="hidden" name="id" value=(id);
+                                    li { (path.as_ref().to_string_lossy()) }
+                                }
                             }
                         }
                         p { "Proceed?" }

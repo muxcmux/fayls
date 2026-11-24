@@ -15,6 +15,10 @@ use std::{
 };
 
 use crate::{
+    MoveError, move_paths, path_is_in_configured_sources, remove_path, rename_without_overwriting,
+    web::views::Message,
+};
+use crate::{
     config, create_folder,
     db::{ExistingPathRecord, ExistingShareRecord, NewShareRecord},
     error::{AppResult, Error},
@@ -22,7 +26,6 @@ use crate::{
     upload,
     web::views::Page,
 };
-use crate::{remove_path, rename_without_overwriting, web::views::Message};
 use salvo::{
     conn::tcp::TcpAcceptor,
     fs::NamedFile,
@@ -30,6 +33,8 @@ use salvo::{
     session::{CookieStore, Session, SessionDepotExt},
 };
 use tokio::sync::mpsc::{self, UnboundedSender};
+
+const SELECTION_COMPLETE_HEADER: &str = "{\"selection-complete\":{\"target\":\"#container\"}}";
 
 // Scopes the path to the shared path, e.g. if the shared path is
 // /Documents/books, then a scoped /Documents/books/fiction would
@@ -371,7 +376,7 @@ async fn authorize_path(
 async fn paths_from_ids(ids: &[i64], depot: &Depot) -> AppResult<HashMap<i64, AuthorizedPath>> {
     let access = access(depot)?;
     let mut authorized_paths = HashMap::new();
-    for record in ExistingPathRecord::find_many_by_id(&ids).await? {
+    for record in ExistingPathRecord::find_many_by_id(ids).await? {
         let scoped_path = access_scoped_path(record.path_buf().to_string_lossy().as_ref(), &access);
         let (_, authorized_path) = authorize_path(scoped_path.into(), depot).await?;
         authorized_paths.insert(record.id, authorized_path);
@@ -392,7 +397,7 @@ async fn paths_from_request_id_params(
         },
     };
 
-    Ok(paths_from_ids(&ids, depot).await?)
+    paths_from_ids(&ids, depot).await
 }
 
 // id query or form param takes precedence
@@ -401,23 +406,22 @@ async fn paths_from_request_ids_or_path_param(
     depot: &Depot,
     req: &mut Request,
 ) -> AppResult<HashMap<i64, AuthorizedPath>> {
-    match req
+    if let Some(ids) = req
         .query::<Vec<i64>>("id")
         .or(req.form::<Vec<i64>>("id").await)
     {
-        Some(ids) => paths_from_ids(&ids, depot).await,
-        None => {
-            let path = req
-                .query::<PathBuf>("path")
-                .ok_or(Error::BadRequest("no path param"))?;
+        paths_from_ids(&ids, depot).await
+    } else {
+        let path = req
+            .query::<PathBuf>("path")
+            .ok_or(Error::BadRequest("no path param"))?;
 
-            let (_, authorized_path) = authorize_path(path, depot).await?;
+        let (_, authorized_path) = authorize_path(path, depot).await?;
 
-            let record = ExistingPathRecord::find_by_path(authorized_path.as_ref())
-                .await?
-                .ok_or(Error::NotFound)?;
-            Ok(HashMap::from([(record.id, authorized_path)]))
-        }
+        let record = ExistingPathRecord::find_by_path(authorized_path.as_ref())
+            .await?
+            .ok_or(Error::NotFound)?;
+        Ok(HashMap::from([(record.id, authorized_path)]))
     }
 }
 
@@ -577,6 +581,11 @@ async fn upload_handler(req: &mut Request, res: &mut Response) -> AppResult {
 #[handler]
 async fn unlink_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> AppResult {
     let paths = paths_from_request_ids_or_path_param(depot, req).await?;
+    for path in paths.values() {
+        if !path_is_in_configured_sources(path.as_ref()).await {
+            return Err(Error::Forbidden);
+        }
+    }
 
     if req.method() == salvo::http::Method::GET {
         res.render(Text::Html(views::unlink_modal(&paths).into_string()));
@@ -592,6 +601,7 @@ async fn unlink_handler(depot: &Depot, req: &mut Request, res: &mut Response) ->
     let paths_count = paths.len();
     let paths_text = if paths_count == 1 { "path" } else { "paths" };
 
+    _ = res.add_header("HX-Trigger", SELECTION_COMPLETE_HEADER, true);
     res.render(Message::CloseModal);
     res.render(Message::Notification(&format!(
         "Deleted {paths_count} {paths_text}"
@@ -606,6 +616,9 @@ async fn rename_handler(depot: &Depot, req: &mut Request, res: &mut Response) ->
         None => req.form::<PathBuf>("path").await.ok_or(Error::NotFound)?,
     };
     let (_, path) = authorize_path(path, depot).await?;
+    if !path_is_in_configured_sources(path.as_ref()).await {
+        return Err(Error::Forbidden);
+    }
 
     if req.method() == salvo::http::Method::GET {
         res.render(Text::Html(views::rename_modal(&path).into_string()));
@@ -631,6 +644,9 @@ async fn rename_handler(depot: &Depot, req: &mut Request, res: &mut Response) ->
         depot,
     )
     .await?;
+    if !path_is_in_configured_sources(new_path.as_ref()).await {
+        return Err(Error::Forbidden);
+    }
 
     match rename_without_overwriting(path.as_ref(), new_path.as_ref()).await {
         Ok(()) => {
@@ -645,6 +661,52 @@ async fn rename_handler(depot: &Depot, req: &mut Request, res: &mut Response) ->
             ));
         }
         Err(error) => return Err(Error::Anyhow(error.into())),
+    }
+
+    Ok(())
+}
+
+#[handler]
+async fn move_handler(depot: &Depot, req: &mut Request, res: &mut Response) -> AppResult {
+    let target = match req.query::<PathBuf>("target") {
+        Some(path) => path,
+        None => req.form::<PathBuf>("target").await.ok_or(Error::NotFound)?,
+    };
+
+    let (_, target) = authorize_path(target, depot).await?;
+    let paths = paths_from_request_ids_or_path_param(depot, req).await?;
+    if !path_is_in_configured_sources(target.as_ref()).await {
+        return Err(Error::Forbidden);
+    }
+    for path in paths.values() {
+        if !path_is_in_configured_sources(path.as_ref()).await {
+            return Err(Error::Forbidden);
+        }
+    }
+
+    if req.method() == salvo::http::Method::GET {
+        res.render(Text::Html(views::move_modal(&target, &paths).into_string()));
+        return Ok(());
+    }
+
+    let sources = paths
+        .values()
+        .map(|path| path.as_ref().to_path_buf())
+        .collect::<Vec<_>>();
+    match move_paths(&sources, target.as_ref()).await {
+        Ok(()) => {
+            let count = sources.len();
+            let noun = if count == 1 { "path" } else { "paths" };
+            _ = res.add_header("HX-Trigger", SELECTION_COMPLETE_HEADER, true);
+            res.render(Message::CloseModal);
+            res.render(Message::Notification(&format!("Moved {count} {noun}")));
+        }
+        Err(MoveError::Io(error)) => return Err(Error::Anyhow(error.into())),
+        Err(error) => {
+            res.status_code(StatusCode::UNPROCESSABLE_ENTITY);
+            _ = res.add_header("HX-Retarget", "#move-error", true);
+            res.render(Message::Error(&error.to_string()));
+        }
     }
 
     Ok(())
@@ -946,6 +1008,11 @@ fn admin_routes() -> Router {
             Router::with_path("rename")
                 .get(rename_handler)
                 .patch(rename_handler),
+        )
+        .push(
+            Router::with_path("move")
+                .get(move_handler)
+                .patch(move_handler),
         )
         .push(Router::with_path("shares").get(shares_handler))
 }

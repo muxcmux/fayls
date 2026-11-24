@@ -33,6 +33,7 @@ directory index (mod_dir), but with search and sharing functionality, and a few 
     - upload files
     - rename paths
     - delete
+    - move (drag and drop)
 
 ## Run with Docker
 

@@ -8,7 +8,11 @@ pub(crate) mod jobs;
 pub(crate) mod upload;
 pub(crate) mod web;
 
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    io,
+    path::{Path, PathBuf},
+};
 use walkdir::WalkDir;
 
 pub(crate) fn dir_size(path: &Path) -> u64 {
@@ -84,6 +88,33 @@ pub(crate) async fn validate_folder_parent(parent: &Path) -> Result<PathBuf, &'s
     Ok(canonical)
 }
 
+pub(crate) async fn path_is_in_configured_sources(path: &Path) -> bool {
+    path_is_in_sources(path, config::get().app.canonicalized_sources()).await
+}
+
+async fn path_is_in_sources(path: &Path, sources: &HashSet<PathBuf>) -> bool {
+    if !path.is_absolute() {
+        return false;
+    }
+
+    let resolved = match tokio::fs::canonicalize(path).await {
+        Ok(resolved) => resolved,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            // A rename destination may not exist yet; resolve its parent.
+            let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+                return false;
+            };
+            let Ok(parent) = tokio::fs::canonicalize(parent).await else {
+                return false;
+            };
+            parent.join(name)
+        }
+        Err(_) => return false,
+    };
+
+    sources.iter().any(|source| resolved.starts_with(source))
+}
+
 pub(crate) async fn create_folder(parent: &Path, name: &str) -> Result<(), &'static str> {
     let segments = validate_folder_name(name)?;
     let parent = validate_folder_parent(parent).await?;
@@ -137,6 +168,100 @@ pub(crate) async fn rename_without_overwriting(
         }
         Err(error) => Err(error),
     }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum MoveError {
+    #[error("Select at least one path to move")]
+    NoPaths,
+    #[error("Choose a destination folder")]
+    InvalidTarget,
+    #[error("A path to move does not exist or is invalid")]
+    InvalidSource,
+    #[error("Cannot move a folder into itself or one of its subfolders")]
+    IntoSelf,
+    #[error("Cannot move a folder and one of its contents together")]
+    OverlappingSources,
+    #[error("A file or folder with that name already exists")]
+    AlreadyExists,
+    #[error(transparent)]
+    Io(#[from] io::Error),
+}
+
+pub(crate) async fn move_paths(paths: &[PathBuf], target: &Path) -> Result<(), MoveError> {
+    if paths.is_empty() {
+        return Err(MoveError::NoPaths);
+    }
+    if !target.is_absolute() {
+        return Err(MoveError::InvalidTarget);
+    }
+
+    let target = tokio::fs::canonicalize(target)
+        .await
+        .map_err(|error| match error.kind() {
+            io::ErrorKind::NotFound | io::ErrorKind::NotADirectory => MoveError::InvalidTarget,
+            _ => MoveError::Io(error),
+        })?;
+    if !tokio::fs::metadata(&target).await?.is_dir() {
+        return Err(MoveError::InvalidTarget);
+    }
+
+    let mut moves = Vec::with_capacity(paths.len());
+    let mut destinations = HashSet::with_capacity(paths.len());
+    let mut directories = Vec::new();
+    for (index, path) in paths.iter().enumerate() {
+        if !path.is_absolute() {
+            return Err(MoveError::InvalidSource);
+        }
+        let name = path.file_name().ok_or(MoveError::InvalidSource)?;
+        let metadata =
+            tokio::fs::symlink_metadata(path)
+                .await
+                .map_err(|error| match error.kind() {
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory => {
+                        MoveError::InvalidSource
+                    }
+                    _ => MoveError::Io(error),
+                })?;
+        if metadata.is_dir() {
+            let canonical = tokio::fs::canonicalize(path).await?;
+            if target.starts_with(&canonical) {
+                return Err(MoveError::IntoSelf);
+            }
+            directories.push((index, canonical));
+        }
+
+        let destination = target.join(name);
+        if !destinations.insert(destination.clone()) {
+            return Err(MoveError::AlreadyExists);
+        }
+        match tokio::fs::symlink_metadata(&destination).await {
+            Ok(_) => return Err(MoveError::AlreadyExists),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(MoveError::Io(error)),
+        }
+        moves.push((path, destination));
+    }
+
+    if directories.iter().any(|(index, parent)| {
+        paths
+            .iter()
+            .enumerate()
+            .any(|(other_index, path)| other_index != *index && path.starts_with(parent))
+    }) {
+        return Err(MoveError::OverlappingSources);
+    }
+
+    for (path, destination) in moves {
+        match rename_without_overwriting(path, &destination).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                return Err(MoveError::AlreadyExists);
+            }
+            Err(error) => return Err(MoveError::Io(error)),
+        }
+    }
+    Ok(())
 }
 
 pub(crate) async fn remove_path(path: &Path) -> std::io::Result<()> {
@@ -229,5 +354,204 @@ mod folder_tests {
             Err("Parent folder does not exist")
         );
         assert!(!missing.exists());
+    }
+}
+
+#[cfg(test)]
+mod source_path_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn checks_existing_paths_and_new_names_against_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let outside = temp.path().join("source-backup");
+        tokio::fs::create_dir(&source).await.unwrap();
+        tokio::fs::create_dir(&outside).await.unwrap();
+        tokio::fs::write(source.join("file"), "inside")
+            .await
+            .unwrap();
+        tokio::fs::write(outside.join("file"), "outside")
+            .await
+            .unwrap();
+        let sources = HashSet::from([tokio::fs::canonicalize(&source).await.unwrap()]);
+
+        assert!(path_is_in_sources(&source, &sources).await);
+        assert!(path_is_in_sources(&source.join("file"), &sources).await);
+        assert!(path_is_in_sources(&source.join("new-name"), &sources).await);
+        assert!(!path_is_in_sources(&outside.join("file"), &sources).await);
+        assert!(!path_is_in_sources(&outside.join("new-name"), &sources).await);
+        assert!(!path_is_in_sources(&source.join("../source-backup/file"), &sources).await);
+        assert!(!path_is_in_sources(Path::new("relative"), &sources).await);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rejects_symlink_paths_that_resolve_outside_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let outside = temp.path().join("outside");
+        tokio::fs::create_dir(&source).await.unwrap();
+        tokio::fs::create_dir(&outside).await.unwrap();
+        std::os::unix::fs::symlink(&outside, source.join("external")).unwrap();
+        std::os::unix::fs::symlink("missing", source.join("broken")).unwrap();
+        let sources = HashSet::from([tokio::fs::canonicalize(&source).await.unwrap()]);
+
+        assert!(!path_is_in_sources(&source.join("external"), &sources).await);
+        assert!(!path_is_in_sources(&source.join("external/new-name"), &sources).await);
+        assert!(path_is_in_sources(&source.join("broken"), &sources).await);
+    }
+}
+
+#[cfg(test)]
+mod move_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn moves_files_and_directories() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        tokio::fs::create_dir_all(source.join("folder"))
+            .await
+            .unwrap();
+        tokio::fs::create_dir(&target).await.unwrap();
+        tokio::fs::write(source.join("file"), "file contents")
+            .await
+            .unwrap();
+        tokio::fs::write(source.join("folder/child"), "child contents")
+            .await
+            .unwrap();
+
+        move_paths(&[source.join("file"), source.join("folder")], &target)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            tokio::fs::read_to_string(target.join("file"))
+                .await
+                .unwrap(),
+            "file contents"
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(target.join("folder/child"))
+                .await
+                .unwrap(),
+            "child contents"
+        );
+        assert!(!source.join("file").exists());
+        assert!(!source.join("folder").exists());
+    }
+
+    #[tokio::test]
+    async fn rejects_self_descendant_and_overlapping_sources() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("parent");
+        let child = parent.join("child");
+        let target = temp.path().join("target");
+        tokio::fs::create_dir_all(&child).await.unwrap();
+        tokio::fs::create_dir(&target).await.unwrap();
+
+        assert!(matches!(
+            move_paths(&[parent.clone()], &parent).await,
+            Err(MoveError::IntoSelf)
+        ));
+        assert!(matches!(
+            move_paths(&[parent.clone()], &child).await,
+            Err(MoveError::IntoSelf)
+        ));
+        assert!(matches!(
+            move_paths(&[parent.clone(), child.clone()], &target).await,
+            Err(MoveError::OverlappingSources)
+        ));
+        assert!(child.is_dir());
+
+        #[cfg(unix)]
+        {
+            let alias = temp.path().join("alias");
+            std::os::unix::fs::symlink(&child, &alias).unwrap();
+            assert!(matches!(
+                move_paths(&[parent], &alias).await,
+                Err(MoveError::IntoSelf)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_single_noncanonical_source_is_not_an_overlap() {
+        let temp = tempfile::tempdir().unwrap();
+        let child = temp.path().join("parent/child");
+        let target = temp.path().join("target");
+        tokio::fs::create_dir_all(&child).await.unwrap();
+        tokio::fs::create_dir(&target).await.unwrap();
+
+        let same_child = child.join("../child");
+        move_paths(&[same_child], &target).await.unwrap();
+
+        assert!(target.join("child").is_dir());
+        assert!(!child.exists());
+    }
+
+    #[tokio::test]
+    async fn refuses_collisions_before_moving_anything() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let target = temp.path().join("target");
+        tokio::fs::create_dir(&source).await.unwrap();
+        tokio::fs::create_dir(&target).await.unwrap();
+        tokio::fs::write(source.join("free"), "keep").await.unwrap();
+        tokio::fs::write(source.join("taken"), "source")
+            .await
+            .unwrap();
+        tokio::fs::write(target.join("taken"), "target")
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            move_paths(&[source.join("free"), source.join("taken")], &target).await,
+            Err(MoveError::AlreadyExists)
+        ));
+        assert_eq!(
+            tokio::fs::read_to_string(target.join("taken"))
+                .await
+                .unwrap(),
+            "target"
+        );
+        assert!(source.join("free").exists());
+        assert!(source.join("taken").exists());
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("missing", target.join("free")).unwrap();
+            assert!(matches!(
+                move_paths(&[source.join("free")], &target).await,
+                Err(MoveError::AlreadyExists)
+            ));
+            assert!(source.join("free").exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn requires_existing_directory_and_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        tokio::fs::write(&source, "source").await.unwrap();
+
+        assert!(matches!(
+            move_paths(&[], temp.path()).await,
+            Err(MoveError::NoPaths)
+        ));
+        assert!(matches!(
+            move_paths(&[source.clone()], &source).await,
+            Err(MoveError::InvalidTarget)
+        ));
+        assert!(matches!(
+            move_paths(&[source.clone()], &temp.path().join("missing")).await,
+            Err(MoveError::InvalidTarget)
+        ));
+        assert!(matches!(
+            move_paths(&[temp.path().join("missing")], temp.path()).await,
+            Err(MoveError::InvalidSource)
+        ));
     }
 }

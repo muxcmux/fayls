@@ -354,7 +354,8 @@ pub(crate) fn layout(
                     button type="button" aria-label="Dismiss error" { "×" }
                 }
                 div #notification {}
-                main #container.container-fluid x-data="{ search_q: new URLSearchParams(location.search).get('q'), multiselecting: false }" {
+                main #container.container-fluid x-data="{ search_q: new URLSearchParams(location.search).get('q'), multiselecting: false }"
+                    "@selection-complete"="multiselecting = false" {
                     form #search hx-get=(access_base_url("/search", access)) hx-push-url="true" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" {
                         input type="search" x-model="search_q" name="q" placeholder="Search...";
                     }
@@ -990,11 +991,31 @@ fn breadcrumbs(view: &View, query_string: &str, access: &Access) -> Markup {
 
     html! {
         ul #breadcrumbs {
-            @for crumb in crumbs {
-                @let link = files_url(&format!("{}{}", crumb.unscoped_path.unwrap_or_default(), query_string), access);
-                li {
-                    a href=(link) hx-get=(link) x-on:click="search_q = ''" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" hx-push-url="true" {
-                        (crumb.text)
+            @for (index, crumb) in crumbs.iter().enumerate() {
+                @let link = files_url(&format!("{}{}", crumb.unscoped_path.as_ref().unwrap_or(&String::new()), query_string), access);
+                @if matches!(access, Access::Shared(_)) || index == 0 || index == crumbs.len().saturating_sub(1) {
+                    li {
+                        a href=(link) hx-get=(link) x-on:click="search_q = ''" hx-target="#view" hx-swap="innerHTML show:top showTarget:#container" hx-push-url="true" {
+                            (crumb.text)
+                        }
+                    }
+                } @else {
+                    @let move_url = format!(
+                        "/move?{}",
+                        urlencode(&[("target", crumb.unscoped_path.as_ref().unwrap_or(&String::new()))])
+                    );
+                    li
+                        hx-on:move={ "confirmMoveModal(event, '" (move_url) "')" } {
+                        a href=(link) hx-get=(link) x-on:click="search_q = ''"
+                            hx-target="#view"
+                            hx-swap="innerHTML show:top showTarget:#container"
+                            hx-push-url="true"
+                            "@dragenter"="dragRowEnter(event, -1)"
+                            "@dragleave"="dragRowLeave(event)"
+                            "@dragover.prevent"=""
+                            "@drop" = "dragRowDrop(event, -1)" {
+                                (crumb.text)
+                            }
                     }
                 }
             }
@@ -1054,7 +1075,7 @@ fn file_list(
                     .filter(checkbox => checkbox !== current && checkbox.checked !== on)
                     .forEach(checkbox => checkbox.click())
             }
-        }" {
+        }" "@selection-complete.window"="checked.clear(); lastToggledCheckbox = null" {
             div #context-menu {}
             table.striped hx-get=(reload_url)
                 ":class"="multiselecting ? 'multiselecting' : ''"
@@ -1179,17 +1200,45 @@ fn row(
     show_full_paths: bool,
     access: &Access,
 ) -> Markup {
-    let mut contextmenu_url =
-        path_context_menu_url(record.path_buf().to_string_lossy().as_ref(), access);
+    let path = record.path_buf();
+    let move_url = format!(
+        "/move?{}",
+        urlencode(&[("target", path.to_string_lossy().as_ref())])
+    );
+    let mut contextmenu_url = path_context_menu_url(path.to_string_lossy().as_ref(), access);
     if matches!(view, View::Search(_)) {
         contextmenu_url = format!("{contextmenu_url}&search=true");
     }
+    let epd = "event.preventDefault()";
+    let (dragenter, dragleave, dragdrop) =
+        if record.kind == PathRecordKind::Directory && matches!(access, Access::Admin) {
+            (
+                "dragRowEnter(event, id)",
+                "dragRowLeave(event, id)",
+                "dragRowDrop(event, id)",
+            )
+        } else {
+            (epd, epd, epd)
+        };
+    let dragstart = if matches!(access, Access::Admin) {
+        "dragRowStart(event, multiselecting, checked, id)"
+    } else {
+        epd
+    };
     html! {
-        tr.(file_row_class(record)) id={ "r"(record.id) } x-on:click="search_q = ''"
+        tr.(file_row_class(record)) id={ "r"(record.id) }
+            x-on:click="search_q = ''"
             hx-get=(link)
             hx-target="#view"
             hx-swap="innerHTML show:top showTarget:#container"
             hx-push-url="true"
+            draggable=(matches!(access, Access::Admin))
+            hx-on:move={ "confirmMoveModal(event, '" (move_url) "')" }
+            "@dragstart"=(dragstart)
+            "@dragenter"=(dragenter)
+            "@dragleave"=(dragleave)
+            "@dragover.prevent"=""
+            "@drop"=(dragdrop)
             x-data={
                 "{
                     id: " (record.id) ",
@@ -1652,6 +1701,53 @@ pub(crate) fn rename_modal(path: &AuthorizedPath) -> Markup {
                 }
                 footer {
                     button form="rename-form" { "Rename" }
+                }
+            }
+        }
+    }
+}
+
+pub(crate) fn move_modal(target: &AuthorizedPath, paths: &HashMap<i64, AuthorizedPath>) -> Markup {
+    let target = target.as_ref().to_string_lossy();
+    let move_url = format!("/move?{}", urlencode(&[("target", target.as_ref())]));
+    html! {
+        dialog open x-ref="modal" x-data="{}" {
+            article "@click.outside"="$refs.modal.close()" {
+                header {
+                    span { "Confirm move" }
+                    button aria-label="Close" rel="prev" x-on:click="$refs.modal.close()" {}
+                }
+                form #move-form action="" hx-patch=(move_url) hx-target="#modal" {
+                    details open[paths.len() < 6] {
+                        summary {
+                            "Move "
+                                (paths.len())
+                                @if paths.len() == 1 {
+                                    " item"
+                                } @else {
+                                    " items"
+                                }
+                        }
+                        ul {
+                            @for (id, path) in paths {
+                                li {
+                                    input type="hidden" name="id" value=(id) {}
+                                    (path.as_ref().to_string_lossy())
+                                    // (path.as_ref().file_name()
+                                    //     .map(|f| f.to_string_lossy())
+                                    //     .unwrap_or(path.as_ref().to_string_lossy()))
+                                }
+                            }
+                        }
+                    }
+                    p {
+                        "into "
+                            code { (target.as_ref()) }
+                    }
+                    div #move-error role="alert" {}
+                }
+                footer {
+                    button form="move-form" { "Move" }
                 }
             }
         }

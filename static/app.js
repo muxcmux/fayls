@@ -256,3 +256,91 @@ function contextMenuClose(_) {
   const rows = document.getElementById('view').querySelectorAll('.paths table tr');
   rows.forEach((r => r.classList.remove('highlight')))
 }
+
+// drag and drop files in lists
+let draggedIds = new Set();
+
+function dragRowStart(event, multiselecting, checked, id) {
+  const row = event.currentTarget;
+
+  if (multiselecting) {
+    checked.add(id)
+  }
+
+  draggedIds = new Set(checked.size == 0 ? [id] : checked);
+
+  const filename = row.querySelector('td.name').textContent;
+
+  const ghost = document.createElement('div');
+  ghost.classList = row.classList;
+  ghost.classList.add('drag-ghost');
+
+  if (checked.size > 1) {
+    ghost.classList.add('multiple')
+  }
+
+  const content = document.createElement('div');
+  content.classList.add('content');
+
+  const icon = document.createElement('i');
+  icon.className = checked.size == 0 ? 'icon' : 'select-multiple'
+  content.appendChild(icon)
+
+  const text = document.createElement('span');
+  text.textContent = checked.size > 1 ? `${filename} and ${checked.size - 1} other${checked.size == 2 ? '' : 's'}` : filename;
+  content.appendChild(text)
+
+  ghost.appendChild(content);
+  document.body.appendChild(ghost);
+
+  event.dataTransfer.setDragImage(ghost, 10, 5);
+
+  requestAnimationFrame(() => ghost.remove());
+}
+
+const dragDepth = new WeakMap();
+
+function dragRowEnter(event, id) {
+  const row = event.currentTarget;
+  const depth = (dragDepth.get(row) ?? 0) + 1;
+  dragDepth.set(row, depth);
+
+  if (depth === 1 && !draggedIds.has(id)) {
+    console.log("enter")
+    row.classList.add('drop');
+  }
+}
+
+function dragRowLeave(event) {
+  const row = event.currentTarget;
+  const depth = dragDepth.get(row);
+  if (depth === undefined) return;
+
+  if (depth > 1) {
+    dragDepth.set(row, depth - 1);
+  } else {
+    console.log("leave")
+    dragDepth.delete(row);
+    row.classList.remove('drop');
+  }
+}
+
+function dragRowDrop(event, id) {
+  event.preventDefault();
+  dragRowLeave(event, id)
+
+  if (!draggedIds.has(id)) {
+    event.currentTarget.dispatchEvent(new CustomEvent("move", {
+      bubbles: true,
+      detail: { ids: [...draggedIds] }
+    }))
+  }
+}
+
+function confirmMoveModal(event, moveUrl) {
+  const url = new URL(moveUrl, location.origin);
+  for (const id of event.detail.ids) {
+    url.searchParams.append("id", String(id));
+  }
+  return htmx.ajax("GET", url.pathname + url.search, "#modal");
+}

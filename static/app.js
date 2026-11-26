@@ -306,7 +306,6 @@ function dragRowEnter(event, id) {
   dragDepth.set(row, depth);
 
   if (depth === 1 && !draggedIds.has(id)) {
-    console.log("enter")
     row.classList.add('drop');
   }
 }
@@ -319,7 +318,6 @@ function dragRowLeave(event) {
   if (depth > 1) {
     dragDepth.set(row, depth - 1);
   } else {
-    console.log("leave")
     dragDepth.delete(row);
     row.classList.remove('drop');
   }
